@@ -1,0 +1,202 @@
+name: Pebbleboy Obelix firmware
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: Stable upstream tag; blank selects the newest vX.Y.Z tag
+        required: false
+        type: string
+  schedule:
+    - cron: "37 3 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pebbleboy-obelix-release
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    outputs:
+      build_release: ${{ steps.sync.outputs.build_release }}
+      release_tag: ${{ steps.sync.outputs.release_tag }}
+      upstream_tag: ${{ steps.sync.outputs.upstream_tag }}
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Rebase patches and create source tag
+        id: sync
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_UPSTREAM_TAG: ${{ inputs.upstream_tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/coredevices/PebbleOS.git
+          git fetch upstream main --tags --force
+
+          upstream_tag="$INPUT_UPSTREAM_TAG"
+          if [ -z "$upstream_tag" ]; then
+            upstream_tag=$(git tag --list 'v*' --sort=-version:refname |
+              grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1)
+          fi
+          if ! git ls-remote --exit-code --tags upstream "refs/tags/$upstream_tag" >/dev/null; then
+            echo "Unknown upstream tag: $upstream_tag" >&2
+            exit 1
+          fi
+
+          revision=$(tr -d '[:space:]' < .pebbleboy-release-revision)
+          release_tag="${upstream_tag}-pebbleboy${revision}"
+          echo "upstream_tag=$upstream_tag" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+
+          if git ls-remote --exit-code --tags origin "refs/tags/$release_tag" >/dev/null; then
+            if gh release view "$release_tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              echo "Release $release_tag already exists"
+              echo "build_release=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "Source tag exists without a release; rebuilding it"
+            echo "build_release=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          old_base=$(tr -d '[:space:]' < .pebbleboy-upstream-base)
+          if [ "$old_base" != "$upstream_tag" ]; then
+            git rebase --onto "$upstream_tag" "$old_base" main
+            printf '%s\n' "$upstream_tag" > .pebbleboy-upstream-base
+            git add .pebbleboy-upstream-base
+            git commit -m "Track PebbleOS $upstream_tag"
+            git push --force-with-lease origin HEAD:main
+          fi
+
+          git tag -a "$release_tag" -m "Pebbleboy Obelix firmware based on $upstream_tag"
+          git push origin "refs/tags/$release_tag"
+          echo "build_release=true" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: sync
+    if: needs.sync.outputs.build_release == 'true'
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/coredevices/pebbleos-docker:v6
+    strategy:
+      fail-fast: false
+      matrix:
+        board:
+          - obelix@dvt
+          - obelix@pvt
+        slot:
+          - 0
+          - 1
+    steps:
+      - name: Mark workspace as safe
+        run: git config --system --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Checkout release source
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.sync.outputs.release_tag }}
+          submodules: recursive
+
+      - name: Install Python dependencies
+        run: |
+          pip install -U pip
+          pip install -r requirements.txt
+
+      - name: Set artifact board name
+        id: board
+        env:
+          BOARD: ${{ matrix.board }}
+        run: echo "name=$(printf '%s' "$BOARD" | tr @ _)" >> "$GITHUB_OUTPUT"
+
+      - name: Configure
+        run: >-
+          ./waf configure --board '${{ matrix.board }}'
+          -DCONFIG_FIRMWARE_SLOT=${{ matrix.slot }} -DCONFIG_RELEASE=y
+
+      - name: Build and bundle
+        run: |
+          ./waf build
+          ./waf bundle
+
+      - name: Collect artifacts
+        env:
+          BOARD_NAME: ${{ steps.board.outputs.name }}
+          RELEASE_TAG: ${{ needs.sync.outputs.release_tag }}
+          SLOT: ${{ matrix.slot }}
+        run: |
+          set -euo pipefail
+          mkdir artifacts
+          cp build/*.pbz "artifacts/normal_${BOARD_NAME}_${RELEASE_TAG}_slot${SLOT}.pbz"
+          cp build/pebbleos.elf "artifacts/firmware_${BOARD_NAME}_${RELEASE_TAG}_slot${SLOT}.elf"
+          cp build/pebbleos_loghash_dict.json \
+            "artifacts/firmware_${BOARD_NAME}_${RELEASE_TAG}_slot${SLOT}_loghash_dict.json"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ steps.board.outputs.name }}_slot${{ matrix.slot }}
+          path: artifacts
+
+  release:
+    needs:
+      - sync
+      - build
+    if: needs.sync.outputs.build_release == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.sync.outputs.release_tag }}
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: downloaded
+
+      - name: Merge slots and prepare release
+        env:
+          RELEASE_TAG: ${{ needs.sync.outputs.release_tag }}
+          UPSTREAM_TAG: ${{ needs.sync.outputs.upstream_tag }}
+        run: |
+          set -euo pipefail
+          mkdir release
+          for board in obelix_dvt obelix_pvt; do
+            python3 tools/merge_pbz.py \
+              --slot0-pbz "downloaded/${board}_slot0/normal_${board}_${RELEASE_TAG}_slot0.pbz" \
+              --slot1-pbz "downloaded/${board}_slot1/normal_${board}_${RELEASE_TAG}_slot1.pbz" \
+              --output "release/normal_${board}_${RELEASE_TAG}.pbz"
+          done
+          find downloaded -type f \( -name '*.elf' -o -name '*_loghash_dict.json' \) \
+            -exec cp {} release/ \;
+          (cd release && sha256sum * > SHA256SUMS)
+          {
+            echo "PebbleOS $UPSTREAM_TAG with the Pebbleboy Obelix audio and app-memory patches."
+            echo
+            echo "This is unofficial custom firmware and is published as a prerelease."
+            echo "Use the PVT PBZ for production Pebble Time 2 watches. Use DVT only on DVT hardware."
+            echo "Each merged PBZ contains both firmware slots so the installer can choose safely."
+            echo
+            echo "See PEBBLEBOY_FIRMWARE.md in the tagged source for details and precautions."
+          } > release-notes.md
+
+      - name: Publish prerelease
+        uses: softprops/action-gh-release@v3.0.0
+        with:
+          tag_name: ${{ needs.sync.outputs.release_tag }}
+          name: Pebbleboy Obelix firmware ${{ needs.sync.outputs.release_tag }}
+          body_path: release-notes.md
+          prerelease: true
+          fail_on_unmatched_files: true
+          files: release/*
