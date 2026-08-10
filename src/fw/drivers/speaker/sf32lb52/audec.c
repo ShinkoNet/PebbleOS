@@ -398,16 +398,25 @@ void audec_start(AudioDevice* audio_device, AudioTransCB cb) {
 
 uint32_t audec_write(AudioDevice* audio_device, void *writeBuf, uint32_t size) {
     AudioDeviceState* state = audio_device->state;
+    uint32_t free_size = 0;
+
+    // The DMA ISR consumes this buffer while the system task writes it.
+    // CircularBuffer updates data_length before copying and its bookkeeping is
+    // not atomic, so an interrupt here can both expose a partially copied block
+    // to DMA and lose one side of the data_length update. Keep the short write
+    // transaction atomic with respect to the audio DMA interrupt.
+    portENTER_CRITICAL();
     if (state->circ_buffer_storage) {
-        uint32_t free_size = circular_buffer_get_write_space_remaining(&state->circ_buffer);
+        free_size = circular_buffer_get_write_space_remaining(&state->circ_buffer);
         uint16_t to_write = (size > free_size) ? (uint16_t)free_size : (uint16_t)size;
         if (to_write > 0) {
             circular_buffer_write(&state->circ_buffer, writeBuf, to_write);
         }
-        return circular_buffer_get_write_space_remaining(&state->circ_buffer);
+        free_size = circular_buffer_get_write_space_remaining(&state->circ_buffer);
     }
+    portEXIT_CRITICAL();
 
-    return 0;
+    return free_size;
 }
 
 void audec_set_vol(AudioDevice* audio_device, int volume) {
@@ -489,6 +498,7 @@ static void prv_dma_request_processing(AudioDeviceState* state) {
                 &system_task_switch_context)) {
             state->callback_pending = false;
         }
+        portEND_SWITCHING_ISR(system_task_switch_context);
     }
 }
 

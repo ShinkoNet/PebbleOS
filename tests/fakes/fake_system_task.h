@@ -21,6 +21,7 @@ typedef struct {
 
 static ListNode *s_system_task_callback_head = NULL;
 static bool s_invoke_as_current = false;
+static bool s_system_task_raised_priority = false;
 static uint32_t system_task_available_space = ~(uint32_t)0;
 
 bool system_task_add_callback(SystemTaskEventCallback cb, void *data) {
@@ -124,6 +125,11 @@ uint32_t fake_system_task_count_callbacks(void) {
 }
 
 void system_task_enable_raised_priority(bool is_raised) {
+  s_system_task_raised_priority = is_raised;
+}
+
+bool fake_system_task_is_priority_raised(void) {
+  return s_system_task_raised_priority;
 }
 
 bool system_task_is_ready_to_run(void) {

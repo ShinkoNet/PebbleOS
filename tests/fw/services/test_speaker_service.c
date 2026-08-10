@@ -141,3 +141,34 @@ void test_speaker_service__same_priority_cannot_preempt_while_playing(void) {
 
   cl_assert(!speaker_service_play_tone(2000, 25, 0, 0, SpeakerPriorityApp, 80));
 }
+
+// Stream refills run on the system task already. A delayed DMA callback can
+// report several free blocks; consume enough PCM to fill all of them without
+// waiting for another callback, or the stream can never recover from a miss.
+void test_speaker_service__stream_refill_catches_up_reported_capacity(void) {
+  int8_t pcm[2048];
+  memset(pcm, 1, sizeof(pcm));
+
+  cl_assert(speaker_service_stream_open(SpeakerPriorityApp, 80,
+                                        SpeakerPcmFormat_16kHz_8bit));
+  cl_assert_equal_i(speaker_service_stream_write(pcm, sizeof(pcm)), sizeof(pcm));
+
+  uint32_t free_size = 4096;
+  s_trans_cb(&free_size);
+
+  cl_assert_equal_i(s_samples_written, 2048);
+  cl_assert_equal_i(s_nonzero_samples, 2048);
+}
+
+// KernelBG normally runs below apps, but it owns the DMA refill callback. It
+// must stay above a CPU-heavy app for the whole playback lifetime, then return
+// to its normal priority after the hardware stops.
+void test_speaker_service__playback_raises_system_task_priority(void) {
+  cl_assert(!fake_system_task_is_priority_raised());
+  cl_assert(speaker_service_stream_open(SpeakerPriorityApp, 80,
+                                        SpeakerPcmFormat_8kHz_8bit));
+  cl_assert(fake_system_task_is_priority_raised());
+
+  speaker_service_stop();
+  cl_assert(!fake_system_task_is_priority_raised());
+}
