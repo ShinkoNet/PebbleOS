@@ -95,7 +95,7 @@ typedef struct {
 
 static SpeakerServiceState s_state;
 
-// Serializes public APIs against prv_refill_bg (system task).
+// Serializes public APIs against the audio refill callback (system task).
 static PebbleMutex *s_lock;
 
 //! Why playback is currently silent, cached so a muted watch logs once per change
@@ -113,7 +113,7 @@ static uint32_t s_total_speaker_on_time_ms;    // Total speaker on-time tracked
 
 static void prv_stop_internal(SpeakerFinishReason reason);
 static void prv_audio_trans_cb(uint32_t *free_size);
-static void prv_refill_bg(void *data);
+static void prv_refill_locked(void);
 
 static bool prv_is_speaker_muted(void) {
   if (alerts_preferences_get_speaker_muted()) {
@@ -206,6 +206,10 @@ static void prv_start_audio(uint8_t vol) {
   PBL_ANALYTICS_ADD(speaker_play_count, 1);
   prv_update_volume_analytics(effective_vol);
 
+  // DMA refills are dispatched on KernelBG, whose normal priority is below
+  // the app task. Keep it above apps while audio is active so a CPU-heavy app
+  // cannot starve the real-time refill deadline.
+  system_task_enable_raised_priority(true);
   audio_init((AudioDevice *)AUDIO);
   audio_set_volume((AudioDevice *)AUDIO, effective_vol);
   audio_start((AudioDevice *)AUDIO, prv_audio_trans_cb);
@@ -216,6 +220,7 @@ static void prv_stop_audio(void) {
   prv_update_volume_analytics(0);
 
   audio_stop((AudioDevice *)AUDIO);
+  system_task_enable_raised_priority(false);
 }
 
 static void prv_free_tracks(void) {
@@ -301,8 +306,25 @@ static bool prv_can_preempt(SpeakerPriority new_pri) {
 //! This is the DMA refill callback path:
 //!   DMA ISR -> system_task_add_callback_from_isr -> audio driver trans_cb -> here
 static void prv_audio_trans_cb(uint32_t *free_size) {
-  // Schedule actual refill work on system task to keep ISR-context callback short
-  system_task_add_callback(prv_refill_bg, NULL);
+  // Every audio driver dispatches this callback on the system task. Refill
+  // directly instead of queueing a second system-task callback, which can miss
+  // the next 32 ms DMA deadline when KernelBG is busy. If one or more driver
+  // blocks were missed, use the reported free capacity to catch up now.
+  uint32_t refill_count = free_size
+                              ? *free_size / (SPEAKER_REFILL_SAMPLES * sizeof(int16_t))
+                              : 1;
+  if (refill_count == 0) {
+    refill_count = 1;
+  }
+
+  mutex_lock(s_lock);
+  if (s_state.source_type != SpeakerSourceStream) {
+    refill_count = 1;
+  }
+  while (refill_count-- && s_state.state != SpeakerStateIdle) {
+    prv_refill_locked();
+  }
+  mutex_unlock(s_lock);
 }
 
 //! Convert a raw sample from the input buffer to 16-bit signed.
@@ -501,12 +523,6 @@ static void prv_refill_locked(void) {
     audio_write((AudioDevice *)AUDIO, s_state.refill_buf,
                 samples_generated * sizeof(int16_t));
   }
-}
-
-static void prv_refill_bg(void *data) {
-  mutex_lock(s_lock);
-  prv_refill_locked();
-  mutex_unlock(s_lock);
 }
 
 bool speaker_service_play_note_seq(const SpeakerNote *notes, uint32_t num_notes,
