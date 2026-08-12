@@ -76,6 +76,33 @@ void test_app_blob__supports_generic_small_and_empty_payloads(void) {
   prv_assert_blob(NULL, 0);
 }
 
+void test_app_blob__reuses_reads_until_process_cleanup(void) {
+  const uint8_t payload[] = "cached read session";
+  uint8_t actual[sizeof(payload)] = {0};
+  prv_store(payload, sizeof(payload));
+
+  cl_assert_equal_i(app_blob_service_test_get_read_fd(), -1);
+  cl_assert_equal_i(app_blob_service_read(&s_uuid, 0, actual, 6), 6);
+  const int read_fd = app_blob_service_test_get_read_fd();
+  cl_assert(read_fd >= 0);
+
+  cl_assert_equal_i(app_blob_service_read(&s_uuid, 6, actual + 6,
+                                          sizeof(payload) - 6),
+                    sizeof(payload) - 6);
+  cl_assert_equal_i(app_blob_service_test_get_read_fd(), read_fd);
+  cl_assert_equal_i(memcmp(actual, payload, sizeof(payload)), 0);
+
+  AppBlobInfo info;
+  cl_assert_equal_i(app_blob_service_get_info(&s_uuid, &info), S_SUCCESS);
+  cl_assert_equal_i(info.size, sizeof(payload));
+  cl_assert_equal_i(app_blob_service_test_get_read_fd(), read_fd);
+
+  app_blob_service_process_cleanup(&s_uuid, PebbleTask_App);
+  cl_assert_equal_i(app_blob_service_test_get_read_fd(), -1);
+  cl_assert_equal_i(app_blob_service_read(&s_uuid, 0, actual, sizeof(actual)),
+                    sizeof(actual));
+}
+
 void test_app_blob__replacement_is_staged_until_valid_commit(void) {
   const uint8_t original[] = "original";
   const uint8_t replacement[] = "replacement";

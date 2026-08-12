@@ -36,8 +36,16 @@ typedef struct {
   uint32_t size;
 } AppBlobTransaction;
 
+typedef struct {
+  bool active;
+  Uuid uuid;
+  int fd;
+  AppBlobHeader header;
+} AppBlobReadSession;
+
 static PebbleMutex *s_mutex;
 static AppBlobTransaction s_transaction;
+static AppBlobReadSession s_read_session;
 
 static status_t prv_get_file_name(char *name, size_t name_size, const Uuid *uuid) {
   if (!name || !uuid) {
@@ -102,6 +110,55 @@ static bool prv_transaction_owned_by(const Uuid *uuid, PebbleTask owner) {
          uuid_equal(&s_transaction.uuid, uuid);
 }
 
+static status_t prv_close_read_session(void) {
+  if (!s_read_session.active) {
+    return S_NO_ACTION_REQUIRED;
+  }
+
+  status_t status = pfs_close(s_read_session.fd);
+  s_read_session = (AppBlobReadSession){.fd = -1};
+  return status;
+}
+
+static status_t prv_close_read_session_for_uuid(const Uuid *uuid) {
+  if (!s_read_session.active || !uuid_equal(&s_read_session.uuid, uuid)) {
+    return S_NO_ACTION_REQUIRED;
+  }
+  return prv_close_read_session();
+}
+
+static status_t prv_open_read_session(const Uuid *uuid) {
+  if (s_read_session.active && uuid_equal(&s_read_session.uuid, uuid)) {
+    return S_SUCCESS;
+  }
+
+  status_t status = prv_close_read_session();
+  if (FAILED(status)) {
+    return status;
+  }
+
+  int fd;
+  status = prv_open(uuid, OP_FLAG_READ | OP_FLAG_USE_PAGE_CACHE, &fd);
+  if (FAILED(status)) {
+    return status;
+  }
+
+  AppBlobHeader header;
+  status = prv_read_header(fd, &header);
+  if (FAILED(status)) {
+    pfs_close(fd);
+    return status;
+  }
+
+  s_read_session = (AppBlobReadSession){
+      .active = true,
+      .uuid = *uuid,
+      .fd = fd,
+      .header = header,
+  };
+  return S_SUCCESS;
+}
+
 static status_t prv_abort_transaction(void) {
   if (!s_transaction.active) {
     return S_NO_ACTION_REQUIRED;
@@ -118,6 +175,7 @@ void app_blob_service_init(void) {
     s_mutex = mutex_create();
   }
   s_transaction = (AppBlobTransaction){.fd = -1};
+  s_read_session = (AppBlobReadSession){.fd = -1};
 }
 
 status_t app_blob_service_get_info(const Uuid *uuid, AppBlobInfo *info_out) {
@@ -126,6 +184,15 @@ status_t app_blob_service_get_info(const Uuid *uuid, AppBlobInfo *info_out) {
   }
 
   mutex_lock(s_mutex);
+  if (s_read_session.active && uuid_equal(&s_read_session.uuid, uuid)) {
+    *info_out = (AppBlobInfo){
+        .size = s_read_session.header.size,
+        .crc32 = s_read_session.header.crc32,
+    };
+    mutex_unlock(s_mutex);
+    return S_SUCCESS;
+  }
+
   int fd;
   status_t status = prv_open(uuid, OP_FLAG_READ, &fd);
   if (FAILED(status)) {
@@ -175,6 +242,10 @@ status_t app_blob_service_begin(const Uuid *uuid, PebbleTask owner, uint32_t siz
     if (FAILED(status)) {
       goto cleanup;
     }
+  }
+  status = prv_close_read_session_for_uuid(uuid);
+  if (FAILED(status)) {
+    goto cleanup;
   }
 
   char name[APP_BLOB_FILE_NAME_MAX_LENGTH];
@@ -329,6 +400,10 @@ status_t app_blob_service_commit(const Uuid *uuid, PebbleTask owner, uint32_t ex
     goto cleanup;
   }
 
+  status = prv_close_read_session_for_uuid(uuid);
+  if (FAILED(status)) {
+    goto cleanup;
+  }
   status = pfs_close(s_transaction.fd);
   if (PASSED(status)) {
     s_transaction = (AppBlobTransaction){.fd = -1};
@@ -345,39 +420,31 @@ int app_blob_service_read(const Uuid *uuid, uint32_t offset, void *data, size_t 
   }
 
   mutex_lock(s_mutex);
-  int fd;
-  int result = prv_open(uuid, OP_FLAG_READ | OP_FLAG_USE_PAGE_CACHE, &fd);
-  if (result < 0) {
+  int result = prv_open_read_session(uuid);
+  if (FAILED(result)) {
     goto cleanup;
   }
 
-  AppBlobHeader header;
-  status_t status = prv_read_header(fd, &header);
-  if (FAILED(status)) {
-    result = status;
-    goto close;
-  }
-  if (offset > header.size || size > header.size - offset) {
+  if (offset > s_read_session.header.size ||
+      size > s_read_session.header.size - offset) {
     result = E_RANGE;
-    goto close;
+    goto cleanup;
   }
   if (size == 0) {
     result = 0;
-    goto close;
+    goto cleanup;
   }
 
-  if (pfs_seek(fd, (int)(sizeof(AppBlobHeader) + offset), FSeekSet) < 0) {
+  if (pfs_seek(s_read_session.fd, (int)(sizeof(AppBlobHeader) + offset), FSeekSet) < 0) {
     result = E_ERROR;
-    goto close;
+    prv_close_read_session();
+    goto cleanup;
   }
-  result = pfs_read(fd, data, size);
+  result = pfs_read(s_read_session.fd, data, size);
+  if (result < 0) {
+    prv_close_read_session();
+  }
 
-close: {
-  status_t close_status = pfs_close(fd);
-  if (result >= 0 && FAILED(close_status)) {
-    result = close_status;
-  }
-}
 cleanup:
   mutex_unlock(s_mutex);
   return result;
@@ -401,6 +468,10 @@ static status_t prv_delete(const Uuid *uuid, bool force, PebbleTask owner) {
       goto cleanup;
     }
     aborted_transaction = true;
+  }
+  status = prv_close_read_session_for_uuid(uuid);
+  if (FAILED(status)) {
+    goto cleanup;
   }
 
   char name[APP_BLOB_FILE_NAME_MAX_LENGTH];
@@ -431,8 +502,15 @@ void app_blob_service_process_cleanup(const Uuid *uuid, PebbleTask owner) {
   }
 
   mutex_lock(s_mutex);
+  prv_close_read_session_for_uuid(uuid);
   if (prv_transaction_owned_by(uuid, owner)) {
     prv_abort_transaction();
   }
   mutex_unlock(s_mutex);
 }
+
+#if UNITTEST
+int app_blob_service_test_get_read_fd(void) {
+  return s_read_session.active ? s_read_session.fd : -1;
+}
+#endif
