@@ -95,6 +95,8 @@ void test_pfs__create(void) {
 
 extern void test_force_garbage_collection(uint16_t start_page);
 extern uint16_t test_get_file_start_page(int fd);
+extern uint16_t test_get_file_tmp_state(int fd);
+extern void pfs_reset_all_state(void);
 void test_pfs__garbage_collection(void) {
   char file_small[10];
   uint16_t start_page = 0;
@@ -340,6 +342,173 @@ void test_pfs__overwrite(void) {
   cl_assert_equal_i(rv, strlen(overwrite_string));
   cl_assert(memcmp(overwrite_string, new_buf, strlen(overwrite_string)) == 0);
   pfs_close(fd);
+}
+
+void test_pfs__abort_overwrite_preserves_original(void) {
+  const char *file = "testfile";
+  const char *original = "original file!";
+  const char *replacement = "replacement file!";
+
+  cl_assert_equal_i(pfs_abort_overwrite(-1), E_INVALID_ARGUMENT);
+
+  int fd = pfs_open(file, OP_FLAG_WRITE, FILE_TYPE_STATIC, strlen(original));
+  cl_assert(fd >= 0);
+  cl_assert_equal_i(pfs_write(fd, original, strlen(original)), strlen(original));
+  cl_assert_equal_i(pfs_close(fd), S_SUCCESS);
+
+  fd = pfs_open(file, OP_FLAG_READ, 0, 0);
+  cl_assert(fd >= 0);
+  cl_assert_equal_i(pfs_abort_overwrite(fd), E_INVALID_OPERATION);
+  cl_assert_equal_i(pfs_close(fd), S_SUCCESS);
+
+  int tmp_fd = pfs_open(file, OP_FLAG_OVERWRITE, FILE_TYPE_STATIC, strlen(replacement));
+  cl_assert(tmp_fd >= 0);
+  cl_assert_equal_i(pfs_write(tmp_fd, replacement, strlen(replacement)), strlen(replacement));
+  cl_assert_equal_i(pfs_abort_overwrite(tmp_fd), S_SUCCESS);
+  cl_assert_equal_i(pfs_abort_overwrite(tmp_fd), E_INVALID_ARGUMENT);
+
+  char read_buf[strlen(original)];
+  fd = pfs_open(file, OP_FLAG_READ, 0, 0);
+  cl_assert(fd >= 0);
+  cl_assert_equal_i(pfs_read(fd, read_buf, sizeof(read_buf)), sizeof(read_buf));
+  cl_assert_equal_i(memcmp(original, read_buf, sizeof(read_buf)), 0);
+  cl_assert_equal_i(pfs_close(fd), S_SUCCESS);
+
+  pfs_init(false);  // An aborted temporary file must not reappear after reboot.
+  fd = pfs_open(file, OP_FLAG_READ, 0, 0);
+  cl_assert(fd >= 0);
+  cl_assert_equal_i(pfs_read(fd, read_buf, sizeof(read_buf)), sizeof(read_buf));
+  cl_assert_equal_i(memcmp(original, read_buf, sizeof(read_buf)), 0);
+  cl_assert_equal_i(pfs_close(fd), S_SUCCESS);
+}
+
+static void prv_reset_overwrite_power_test(void) {
+  fake_spi_flash_force_future_failure(0, NULL);
+  pfs_format(true);
+  pfs_reset_all_state();
+  cl_assert_equal_i(pfs_init(false), S_SUCCESS);
+}
+
+static int prv_create_pending_overwrite(const char *name, const void *original,
+                                        size_t original_size, const void *replacement,
+                                        size_t replacement_size) {
+  int fd = pfs_open(name, OP_FLAG_WRITE, FILE_TYPE_STATIC, original_size);
+  cl_assert(fd >= 0);
+  cl_assert_equal_i(pfs_write(fd, original, original_size), original_size);
+  cl_assert_equal_i(pfs_close(fd), S_SUCCESS);
+
+  fd = pfs_open(name, OP_FLAG_OVERWRITE, FILE_TYPE_STATIC, replacement_size);
+  cl_assert(fd >= 0);
+  cl_assert_equal_i(pfs_write(fd, replacement, replacement_size), replacement_size);
+  return fd;
+}
+
+static void prv_assert_power_test_file(const char *name, const void *expected, size_t size) {
+  int fd = pfs_open(name, OP_FLAG_READ, 0, 0);
+  cl_assert(fd >= 0);
+  cl_assert_equal_i(pfs_get_file_size(fd), size);
+  cl_assert_equal_i(test_get_file_tmp_state(fd), 0);
+
+  uint8_t actual[size];
+  cl_assert_equal_i(pfs_read(fd, actual, sizeof(actual)), sizeof(actual));
+  cl_assert_equal_i(memcmp(actual, expected, sizeof(actual)), 0);
+  cl_assert_equal_i(pfs_close(fd), S_SUCCESS);
+}
+
+void test_pfs__overwrite_close_recovers_from_every_power_cut(void) {
+  enum {
+    OriginalSize = (PFS_SECTOR_SIZE * 2) + 37,
+    ReplacementSize = PFS_SECTOR_SIZE + 19,
+    MaxPowerCut = 32,
+  };
+  const char *name = "powerclose";
+  uint8_t original[OriginalSize];
+  uint8_t replacement[ReplacementSize];
+  memset(original, 0x31, sizeof(original));
+  memset(replacement, 0xa7, sizeof(replacement));
+
+  bool saw_completed_close = false;
+  for (int cut = 0; cut < MaxPowerCut; cut++) {
+    prv_reset_overwrite_power_test();
+    int tmp_fd = prv_create_pending_overwrite(name, original, sizeof(original), replacement,
+                                              sizeof(replacement));
+
+    jmp_buf power_loss;
+    volatile bool close_completed = false;
+    if (setjmp(power_loss) == 0) {
+      fake_spi_flash_force_future_failure(cut, &power_loss);
+      cl_assert_equal_i(pfs_close(tmp_fd), S_SUCCESS);
+      close_completed = true;
+    }
+    fake_spi_flash_force_future_failure(0, NULL);
+
+    if (cut == 1) {
+      // Commit intent is irreversible even if close returns through an error path.
+      cl_assert_equal_i(pfs_abort_overwrite(tmp_fd), E_INVALID_OPERATION);
+    }
+
+    pfs_reset_all_state();
+    cl_assert_equal_i(pfs_init(false), S_SUCCESS);
+    if (cut == 0) {
+      prv_assert_power_test_file(name, original, sizeof(original));
+    } else {
+      prv_assert_power_test_file(name, replacement, sizeof(replacement));
+    }
+
+    if (close_completed) {
+      saw_completed_close = true;
+      break;
+    }
+  }
+  cl_assert(saw_completed_close);
+}
+
+void test_pfs__overwrite_recovery_survives_repeated_power_loss(void) {
+  enum {
+    OriginalSize = (PFS_SECTOR_SIZE * 2) + 37,
+    ReplacementSize = PFS_SECTOR_SIZE + 19,
+    MaxPowerCut = 32,
+  };
+  const char *name = "powerrecovery";
+  uint8_t original[OriginalSize];
+  uint8_t replacement[ReplacementSize];
+  memset(original, 0x42, sizeof(original));
+  memset(replacement, 0xb8, sizeof(replacement));
+
+  bool saw_completed_recovery = false;
+  for (int cut = 0; cut < MaxPowerCut; cut++) {
+    prv_reset_overwrite_power_test();
+    int tmp_fd = prv_create_pending_overwrite(name, original, sizeof(original), replacement,
+                                              sizeof(replacement));
+
+    jmp_buf close_power_loss;
+    if (setjmp(close_power_loss) == 0) {
+      fake_spi_flash_force_future_failure(1, &close_power_loss);
+      pfs_close(tmp_fd);
+      cl_fail("overwrite close did not lose power");
+    }
+    fake_spi_flash_force_future_failure(0, NULL);
+    pfs_reset_all_state();
+
+    jmp_buf recovery_power_loss;
+    volatile bool recovery_completed = false;
+    if (setjmp(recovery_power_loss) == 0) {
+      fake_spi_flash_force_future_failure(cut, &recovery_power_loss);
+      pfs_reboot_cleanup();
+      recovery_completed = true;
+    }
+    fake_spi_flash_force_future_failure(0, NULL);
+
+    pfs_reset_all_state();
+    cl_assert_equal_i(pfs_init(false), S_SUCCESS);
+    prv_assert_power_test_file(name, replacement, sizeof(replacement));
+
+    if (recovery_completed) {
+      saw_completed_recovery = true;
+      break;
+    }
+  }
+  cl_assert(saw_completed_recovery);
 }
 
 void test_pfs__seek(void) {
@@ -781,7 +950,6 @@ void test_pfs__last_written_page(void) {
 
 
 extern void test_force_reboot_during_garbage_collection(uint16_t start_page);
-extern void pfs_reset_all_state(void);
 void test_pfs__reboot_during_gc(void) {
   pfs_format(true);
   pfs_reset_all_state();

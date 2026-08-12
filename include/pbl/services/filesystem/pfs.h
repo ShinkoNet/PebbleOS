@@ -125,9 +125,17 @@ extern int pfs_read(int fd, void *buf, size_t size);
 extern int pfs_seek(int fd, int offset, FSeekType seek_type);
 
 //! Frees up internal tracking data associated with a given file.
+//! An interrupted OP_FLAG_OVERWRITE close is completed safely on reboot.
 //! @param fd - the fd to close
 //! @return - S_SUCCESS or appropriate error code on failure
 extern status_t pfs_close(int fd);
+
+//! Discards an uncommitted file opened with OP_FLAG_OVERWRITE without
+//! replacing the original file.
+//! @param fd - the overwrite fd to abort
+//! @return S_SUCCESS, E_INVALID_ARGUMENT for an invalid fd, or
+//!         E_INVALID_OPERATION if fd is not an overwrite
+extern status_t pfs_abort_overwrite(int fd);
 
 //! calls pfs_close and pfs_remove on a file successively
 //! @param fd - the fd describing the file to remove
