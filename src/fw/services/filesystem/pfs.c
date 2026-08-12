@@ -109,6 +109,11 @@ typedef struct PACKED FileMetaData {
 #define CREATE_STATE_DONE       0x0
 #define DELETE_STATE_DONE       0x0
 
+// tmp_state is active-low. Legacy committed files contain 0x0000.
+#define TMP_COMMIT_STARTED_BIT (1 << 0)
+#define TMP_COMMIT_DONE_BIT (1 << 1)
+#define TMP_COMMIT_STARTED ((uint8_t)~TMP_COMMIT_STARTED_BIT)
+
 #define TMP_STATE_OFFSET        (offsetof(FileMetaData, tmp_state))
 #define CREATE_STATE_OFFSET     (offsetof(FileMetaData, create_state))
 #define DELETE_STATE_OFFSET     (offsetof(FileMetaData, delete_state))
@@ -364,8 +369,25 @@ static bool is_delete_complete(uint16_t start_page) {
   return (get_curr_state(start_page, DELETE_STATE_OFFSET, DELETE_STATE_DONE));
 }
 
+static uint8_t prv_get_tmp_state(uint16_t start_page) {
+  uint8_t state;
+  const uint32_t offset = prv_page_to_flash_offset(start_page) + METADATA_OFFSET + TMP_STATE_OFFSET;
+  prv_flash_read(&state, sizeof(state), offset);
+  return state;
+}
+
+static void prv_mark_tmp_commit_started(uint16_t start_page) {
+  const uint32_t offset = prv_page_to_flash_offset(start_page) + METADATA_OFFSET + TMP_STATE_OFFSET;
+  const uint8_t state = TMP_COMMIT_STARTED;
+  prv_flash_write(&state, sizeof(state), offset);
+}
+
+static bool prv_tmp_commit_started(uint16_t start_page) {
+  return (prv_get_tmp_state(start_page) & TMP_COMMIT_STARTED_BIT) == 0;
+}
+
 static bool is_tmp_file(uint16_t start_page) {
-  return (!get_curr_state(start_page, TMP_STATE_OFFSET, TMP_STATE_DONE));
+  return (prv_get_tmp_state(start_page) & TMP_COMMIT_DONE_BIT) != 0;
 }
 
 static uint32_t compute_pg_header_crc(PageHeader *hdr) {
@@ -1277,12 +1299,37 @@ bool pfs_active(void) {
   return pfs_active_in_region(0, s_pfs_size);
 }
 
+static status_t prv_complete_tmp_overwrite(uint16_t tmp_page) {
+  PageHeader page_header;
+  FileHeader file_header;
+  if (read_header(tmp_page, &page_header, &file_header) != PageAndFileHdrValid ||
+      file_header.file_namelen == 0) {
+    return unlink_flash_file(tmp_page);
+  }
+
+  char name[file_header.file_namelen + 1];
+  name[file_header.file_namelen] = '\0';
+  prv_flash_read(name, file_header.file_namelen,
+                 prv_page_to_flash_offset(tmp_page) + FILE_NAME_OFFSET);
+
+  uint16_t original_page;
+  status_t status = locate_flash_file(name, &original_page);
+  if (status == S_SUCCESS) {
+    status = unlink_flash_file(original_page);
+  } else if (status == E_DOES_NOT_EXIST) {
+    status = S_SUCCESS;
+  }
+
+  if (PASSED(status)) {
+    update_curr_state(tmp_page, TMP_STATE_OFFSET, TMP_STATE_DONE);
+  }
+  return status;
+}
+
 // Scans through the filesystem to see if we rebooted while a file was in the
 // middle of being created and cleans up these partial files.
 void pfs_reboot_cleanup(void) {
-  static uint16_t curr_pg = 0;
-
-  for (; curr_pg < s_pfs_page_count; curr_pg++) {
+  for (uint16_t curr_pg = 0; curr_pg < s_pfs_page_count; curr_pg++) {
     uint8_t page_flags = prv_get_page_flags(curr_pg);
 
     if (IS_PAGE_TYPE(page_flags, PAGE_FLAG_START_PAGE)) {
@@ -1290,9 +1337,17 @@ void pfs_reboot_cleanup(void) {
         PBL_LOG_WRN("File at %d creation did not complete ",
             curr_pg);
         unlink_flash_file(curr_pg);
-      } else if (is_tmp_file(curr_pg)) { // make sure this isn't a temp file
-        PBL_LOG_WRN("Removing temp file at %d", curr_pg);
-        unlink_flash_file(curr_pg);
+      } else if (is_tmp_file(curr_pg)) {
+        if (prv_tmp_commit_started(curr_pg)) {
+          PBL_LOG_WRN("Completing overwrite at %d", curr_pg);
+          prv_complete_tmp_overwrite(curr_pg);
+        } else {
+          PBL_LOG_WRN("Removing temp file at %d", curr_pg);
+          unlink_flash_file(curr_pg);
+        }
+      } else if (!get_curr_state(curr_pg, TMP_STATE_OFFSET, TMP_STATE_DONE)) {
+        // Finish a torn legacy-state write after the file became visible.
+        update_curr_state(curr_pg, TMP_STATE_OFFSET, TMP_STATE_DONE);
       }
     } else if (page_type_bits_set(page_flags, DELETED_START_PAGE_MASK) &&
         !is_delete_complete(curr_pg)) {
@@ -1431,6 +1486,9 @@ status_t pfs_close(int fd) {
 
   File *f = &PFS_FD(fd).file;
   if (f->is_tmp) {
+    // Once this marker lands, reboot recovery completes the replacement.
+    prv_mark_tmp_commit_started(f->start_page);
+
     // If the original file is still open, force-evict it before removing.
     // This prevents pfs_remove() from CROAKing on the in-use original fd.
     // Callers should close the original before the temp, but if they don't,
@@ -1442,11 +1500,13 @@ status_t pfs_close(int fd) {
       PFS_FD(orig_fd).fd_status = FD_STATUS_UNREFERENCED;
       PFS_FD(orig_fd).time_closed = time_closed_counter++;
     }
-    pfs_remove(f->name);
-    // Note: if we reboot before updating the tmp state flag to done, the tmp &
-    // original file will be deleted. This is an extremely small window, but
-    // could be resolved by checking on reboot to see if both versions exist.
-    // If both exist, the orig is valid. Iff tmp exists, the tmp file is valid
+
+    status_t remove_status = pfs_remove(f->name);
+    if (FAILED(remove_status) && remove_status != E_DOES_NOT_EXIST) {
+      res = remove_status;
+      goto cleanup;
+    }
+
     update_curr_state(f->start_page, TMP_STATE_OFFSET, TMP_STATE_DONE);
     f->is_tmp = false;
   }
@@ -1468,6 +1528,35 @@ status_t pfs_close(int fd) {
 cleanup:
   mutex_unlock_recursive(s_pfs_mutex);
   return (res);
+}
+
+status_t pfs_abort_overwrite(int fd) {
+  mutex_lock_recursive(s_pfs_mutex);
+
+  status_t res = E_UNKNOWN;
+  if (!FD_VALID(fd)) {
+    res = E_INVALID_ARGUMENT;
+    goto cleanup;
+  }
+
+  File *f = &PFS_FD(fd).file;
+  if (!f->is_tmp) {
+    res = E_INVALID_OPERATION;
+    goto cleanup;
+  }
+
+  const uint16_t start_page = f->start_page;
+  if (prv_tmp_commit_started(start_page)) {
+    res = E_INVALID_OPERATION;
+    goto cleanup;
+  }
+
+  mark_fd_free(fd);
+  res = unlink_flash_file(start_page);
+
+cleanup:
+  mutex_unlock_recursive(s_pfs_mutex);
+  return res;
 }
 
 status_t pfs_close_and_remove(int fd) {
@@ -2357,6 +2446,14 @@ void pfs_command_crc(const char *filename) {
 #if UNITTEST
 uint16_t test_get_file_start_page(int fd) {
   return (PFS_FD(fd).file.start_page);
+}
+
+uint16_t test_get_file_tmp_state(int fd) {
+  uint16_t state;
+  const uint32_t offset =
+      prv_page_to_flash_offset(PFS_FD(fd).file.start_page) + METADATA_OFFSET + TMP_STATE_OFFSET;
+  prv_flash_read(&state, sizeof(state), offset);
+  return state;
 }
 
 void test_force_garbage_collection(uint16_t start_page) {
