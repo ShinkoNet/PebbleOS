@@ -34,6 +34,9 @@
 #include "pbl/services/wakeup.h"
 #include "pbl/services/weather/weather_service.h"
 #include "pbl/services/runlevel_impl.h"
+#ifdef CONFIG_SERVICE_FILESYSTEM
+#include "services/app_blob/service.h"
+#endif
 
 #ifdef CONFIG_ORIENTATION_MANAGER
 #include "pbl/services/orientation_manager.h"
@@ -84,6 +87,9 @@ void services_normal_early_init(void) {
 
 void services_normal_init(void) {
   persist_service_init();
+#ifdef CONFIG_SERVICE_FILESYSTEM
+  app_blob_service_init();
+#endif
 
   app_install_manager_init();
 

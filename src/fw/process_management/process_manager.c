@@ -31,6 +31,9 @@
 #include "pbl/services/persist.h"
 #include "pbl/services/voice/voice.h"
 #include "shell/normal/watchface.h"
+#ifdef CONFIG_SERVICE_FILESYSTEM
+#include "services/app_blob/service.h"
+#endif
 
 #include "syscall/syscall.h"
 #include <pbl/logging/logging.h>
@@ -536,6 +539,9 @@ void process_manager_process_cleanup(PebbleTask task) {
   // just in case other services are still in flight.
   accel_service_cleanup_task_session(task);
   animation_service_cleanup(task);
+#ifdef CONFIG_SERVICE_FILESYSTEM
+  app_blob_service_process_cleanup(&context->app_md->uuid, task);
+#endif
   persist_service_client_close(&context->app_md->uuid);
   event_reset_from_process_queue(task);
   evented_timer_clear_process_timers(task);

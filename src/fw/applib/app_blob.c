@@ -3,7 +3,9 @@
 
 #include "app_blob.h"
 
+#include "kernel/pebble_tasks.h"
 #include "process_management/process_manager.h"
+#include "services/app_blob/service.h"
 #include "syscall/syscall.h"
 #include "syscall/syscall_internal.h"
 
@@ -23,18 +25,18 @@ DEFINE_SYSCALL(size_t, app_blob_get_free_size, void) {
 }
 
 DEFINE_SYSCALL(status_t, app_blob_begin, uint32_t size) {
-  return app_blob_service_begin(prv_current_uuid(), size);
+  return app_blob_service_begin(prv_current_uuid(), pebble_task_get_current(), size);
 }
 
 DEFINE_SYSCALL(int, app_blob_write, uint32_t offset, const void *data, size_t size) {
   if (PRIVILEGE_WAS_ELEVATED) {
     syscall_assert_userspace_buffer(data, size);
   }
-  return app_blob_service_write(prv_current_uuid(), offset, data, size);
+  return app_blob_service_write(prv_current_uuid(), pebble_task_get_current(), offset, data, size);
 }
 
 DEFINE_SYSCALL(status_t, app_blob_commit, uint32_t expected_crc32) {
-  return app_blob_service_commit(prv_current_uuid(), expected_crc32);
+  return app_blob_service_commit(prv_current_uuid(), pebble_task_get_current(), expected_crc32);
 }
 
 DEFINE_SYSCALL(int, app_blob_read, uint32_t offset, void *data, size_t size) {
@@ -45,5 +47,5 @@ DEFINE_SYSCALL(int, app_blob_read, uint32_t offset, void *data, size_t size) {
 }
 
 DEFINE_SYSCALL(status_t, app_blob_delete, void) {
-  return app_blob_service_delete(prv_current_uuid());
+  return app_blob_service_delete_for_task(prv_current_uuid(), pebble_task_get_current());
 }

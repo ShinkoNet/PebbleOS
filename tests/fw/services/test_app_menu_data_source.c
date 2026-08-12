@@ -30,6 +30,7 @@
 ////////////////////////////////////
 #include "stubs_activity.h"
 #include "stubs_analytics.h"
+#include "stubs_app_blob_service.h"
 #include "stubs_app_custom_icon.h"
 #include "stubs_app_fetch_endpoint.h"
 #include "stubs_app_manager.h"
