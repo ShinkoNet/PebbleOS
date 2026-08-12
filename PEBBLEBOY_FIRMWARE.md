@@ -19,9 +19,13 @@ Repeated reads reuse one validated PFS session until the app exits or mutates
 its blob. Cartridge cache misses therefore seek directly to their payload
 instead of reopening the file and validating both headers for every line.
 
-Pebbleboy's cartridge cache is sized for PebbleOS 4.33.1's standard 128 KiB
-application limit. Because earlier Pebbles expose smaller app regions,
-Pebbleboy only supports Pebble Time 2 and Pebble 2 Duo.
+On Obelix, the build also assigns 32 KiB more SRAM to the foreground app. This
+lets Pebbleboy retain a 16 KiB ROM-line cache with ample heap margin; Pokémon
+Crystal's idle overworld loop otherwise cycles through about 13.5 KiB of ROM
+each emulated frame and continually rereads it from flash.
+
+Because earlier Pebbles expose smaller app regions, Pebbleboy only supports
+Pebble Time 2 and Pebble 2 Duo.
 
 The firmware is still PebbleOS and remains licensed under Apache-2.0. The
 changes are maintained as ordinary commits on top of the upstream release so
