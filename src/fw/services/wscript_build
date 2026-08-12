@@ -22,6 +22,7 @@ if bld.env.CONFIG_SERVICE_APP_GLANCES:
     bld.recurse('app_glances')
 if bld.env.CONFIG_SERVICE_APP_INBOX_SERVICE:
     bld.recurse('app_inbox_service')
+bld.recurse('app_blob')
 if bld.env.CONFIG_SERVICE_APP_MESSAGE:
     bld.recurse('app_message')
 if bld.env.CONFIG_SERVICE_APP_ORDER_ENDPOINT:
