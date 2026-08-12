@@ -186,7 +186,7 @@ jobs:
             -exec cp {} release/ \;
           (cd release && sha256sum * > SHA256SUMS)
           {
-            echo "PebbleOS $UPSTREAM_TAG with the Pebbleboy Obelix audio and app-memory patches."
+            echo "PebbleOS $UPSTREAM_TAG with the Pebbleboy Obelix audio and app-blob patches."
             echo
             echo "This is unofficial custom firmware and is published as a prerelease."
             echo "Use the PVT PBZ for production Pebble Time 2 watches. Use DVT only on DVT hardware."
