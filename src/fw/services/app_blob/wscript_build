@@ -1,0 +1,4 @@
+bld.stlib(source=['service.c'],
+          target='services_app_blob',
+          use=['fw_includes', 'pbl_includes'])
+bld.env.SERVICES.append('services_app_blob')

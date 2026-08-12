@@ -4,7 +4,7 @@
               "You should also make sure you are obeying our API design guidelines:",
               "https://pebbletechnology.atlassian.net/wiki/display/DEV/SDK+API+Design+Guidelines"
             ],
-  "revision" : "109",
+  "revision" : "110",
   "version" : "2.0",
   "files": [
     "include/pbl/drivers/ambient_light.h",
@@ -29,6 +29,8 @@
     "fw/applib/app_sync/app_sync.h",
     "fw/applib/app_watch_info.h",
     "fw/applib/app_worker.h",
+    "fw/applib/app_blob.h",
+    "include/pbl/services/app_blob.h",
     "fw/applib/backlight_service.h",
     "fw/applib/battery_state_service.h",
     "fw/applib/bluetooth/ble_ad_parse.h",
@@ -1738,6 +1740,40 @@
             }, {
               "type": "type",
               "name": "status_t"
+            }, {
+              "type": "define",
+              "name": "APP_BLOB_MAX_SIZE"
+            }, {
+              "type": "type",
+              "name": "AppBlobInfo"
+            }, {
+              "type": "function",
+              "name": "app_blob_get_info",
+              "addedRevision": "110"
+            }, {
+              "type": "function",
+              "name": "app_blob_get_free_size",
+              "addedRevision": "110"
+            }, {
+              "type": "function",
+              "name": "app_blob_begin",
+              "addedRevision": "110"
+            }, {
+              "type": "function",
+              "name": "app_blob_write",
+              "addedRevision": "110"
+            }, {
+              "type": "function",
+              "name": "app_blob_commit",
+              "addedRevision": "110"
+            }, {
+              "type": "function",
+              "name": "app_blob_read",
+              "addedRevision": "110"
+            }, {
+              "type": "function",
+              "name": "app_blob_delete",
+              "addedRevision": "110"
             }, {
               "type": "function",
               "name": "persist_exists",

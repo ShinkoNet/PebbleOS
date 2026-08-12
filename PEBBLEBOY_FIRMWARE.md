@@ -1,12 +1,21 @@
 # Pebbleboy firmware for Pebble Time 2
 
 This fork publishes an optional PebbleOS build for Pebbleboy on Obelix
-(Pebble Time 2). It tracks stable upstream PebbleOS tags and carries two small
+(Pebble Time 2). It tracks stable upstream PebbleOS tags and carries three
 patch sets:
 
-- keep speaker DMA refills ahead of CPU-heavy foreground apps; and
+- keep speaker DMA refills ahead of CPU-heavy foreground apps;
 - give Obelix foreground apps another 32 KiB of RAM for Pebbleboy's cartridge
-  cache and emulator state.
+  cache and emulator state; and
+- expose a UUID-scoped app blob API for verified payloads up to 4 MiB in the
+  shared PFS flash filesystem.
+
+Pebbleboy uses the blob API to install the configured cartridge once over
+AppMessage and then read it locally while playing. A blob is invisible until
+its full payload passes CRC32 verification, survives app upgrades, and is
+deleted when its owning app is removed. The API is generic rather than tied to
+ROMs, but each app UUID has only one blob and filesystem free space remains
+shared with other watch data.
 
 The firmware is still PebbleOS and remains licensed under Apache-2.0. The
 changes are maintained as ordinary commits on top of the upstream release so

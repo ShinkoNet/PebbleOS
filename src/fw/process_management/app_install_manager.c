@@ -24,6 +24,7 @@
 #include "pbl/services/blob_db/app_db.h"
 #include "pbl/services/blob_db/pin_db.h"
 #include "pbl/services/persist.h"
+#include "pbl/services/app_blob.h"
 #include "pbl/services/process_management/app_storage.h"
 #include <pbl/logging/logging.h>
 #include "system/passert.h"
@@ -435,6 +436,7 @@ static void app_install_launcher_task_callback(void *context) {
       // app, not during an AppDB clear.
       if (!app_upgrade) {
         persist_service_delete_file(s_install_callback_data.uuid);
+        app_blob_service_delete(s_install_callback_data.uuid);
 #if !defined(CONFIG_RECOVERY_FW)
         comm_session_app_session_capabilities_evict(s_install_callback_data.uuid);
 #endif
