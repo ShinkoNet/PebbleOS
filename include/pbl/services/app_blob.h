@@ -10,7 +10,7 @@
 #include "system/status_codes.h"
 
 //! Maximum payload stored by the app blob service.
-#define APP_BLOB_MAX_SIZE (4u * 1024u * 1024u)
+#define APP_BLOB_MAX_SIZE (8u * 1024u * 1024u)
 
 typedef struct AppBlobInfo {
   uint32_t size;

@@ -150,10 +150,6 @@ config APP_RAM_FLINT_RUNTIME_SIZE
 
 config APP_RAM_EMERY_SEGMENT_SIZE
     int
-    # Obelix has enough SRAM to trade 32 KiB of kernel headroom for a larger
-    # foreground-app heap. Keep qemu_emery identical so this split is tested
-    # before producing hardware firmware.
-    default 167936 if BOARD_OBELIX || BOARD_QEMU_EMERY
     default 135168
 
 config APP_RAM_EMERY_RUNTIME_SIZE
