@@ -22,3 +22,7 @@ int app_blob_service_read(const Uuid *uuid, uint32_t offset, void *data, size_t 
 status_t app_blob_service_delete_for_task(const Uuid *uuid, PebbleTask owner);
 status_t app_blob_service_delete(const Uuid *uuid);
 void app_blob_service_process_cleanup(const Uuid *uuid, PebbleTask owner);
+
+#if UNITTEST
+int app_blob_service_test_get_read_fd(void);
+#endif

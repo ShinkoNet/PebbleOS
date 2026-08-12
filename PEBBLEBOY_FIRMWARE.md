@@ -15,6 +15,10 @@ deleted when its owning app is removed. The API is generic rather than tied to
 ROMs, but each app UUID has only one blob and filesystem free space remains
 shared with other watch data.
 
+Repeated reads reuse one validated PFS session until the app exits or mutates
+its blob. Cartridge cache misses therefore seek directly to their payload
+instead of reopening the file and validating both headers for every line.
+
 Pebbleboy's cartridge cache is sized for PebbleOS 4.33.1's standard 128 KiB
 application limit. Because earlier Pebbles expose smaller app regions,
 Pebbleboy only supports Pebble Time 2 and Pebble 2 Duo.
