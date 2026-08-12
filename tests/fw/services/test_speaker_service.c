@@ -172,3 +172,18 @@ void test_speaker_service__playback_raises_system_task_priority(void) {
   speaker_service_stop();
   cl_assert(!fake_system_task_is_priority_raised());
 }
+
+void test_speaker_service__stop_preserves_another_priority_owner(void) {
+  system_task_enable_raised_priority(true);
+  cl_assert_equal_i(fake_system_task_priority_refcount(), 1);
+
+  cl_assert(speaker_service_stream_open(SpeakerPriorityApp, 80, SpeakerPcmFormat_8kHz_8bit));
+  cl_assert_equal_i(fake_system_task_priority_refcount(), 2);
+
+  speaker_service_stop();
+  cl_assert(fake_system_task_is_priority_raised());
+  cl_assert_equal_i(fake_system_task_priority_refcount(), 1);
+
+  system_task_enable_raised_priority(false);
+  cl_assert(!fake_system_task_is_priority_raised());
+}

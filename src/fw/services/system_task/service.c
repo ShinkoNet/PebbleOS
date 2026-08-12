@@ -35,6 +35,7 @@ static SystemTaskEventCallback s_current_cb;
 
 static bool s_system_task_idle = true;
 static bool s_should_block_callbacks = false;
+static uint32_t s_raised_priority_refcount;
 
 static bool prv_is_accepting_callbacks() {
   return s_system_task_queue != 0 && !s_should_block_callbacks;
@@ -78,6 +79,8 @@ static void system_task_main(void* paramater) {
 void system_task_init(void) {
   static const int SYSTEM_TASK_QUEUE_LENGTH = 30;
   static const int FROM_APP_SYSTEM_TASK_QUEUE_LENGTH = 8;
+
+  s_raised_priority_refcount = 0;
 
   s_system_task_queue = xQueueCreate(SYSTEM_TASK_QUEUE_LENGTH, sizeof(SystemTaskEvent));
   s_from_app_system_task_queue = xQueueCreate(FROM_APP_SYSTEM_TASK_QUEUE_LENGTH, sizeof(SystemTaskEvent));
@@ -219,8 +222,30 @@ void* system_task_get_current_callback(void) {
 
 void system_task_enable_raised_priority(bool is_raised) {
   const uint32_t raised_priority_level = tskIDLE_PRIORITY + 3; // Same as KernelMain / BT tasks
-  vTaskPrioritySet(pebble_task_get_handle_for_task(PebbleTask_KernelBackground),
-                   (is_raised ? raised_priority_level : SYSTEM_TASK_PRIORITY) | portPRIVILEGE_BIT);
+
+  taskENTER_CRITICAL();
+  if (is_raised) {
+    PBL_ASSERTN(s_raised_priority_refcount < UINT32_MAX);
+    if (s_raised_priority_refcount == UINT32_MAX) {
+      taskEXIT_CRITICAL();
+      return;
+    }
+    if (s_raised_priority_refcount++ == 0) {
+      vTaskPrioritySet(pebble_task_get_handle_for_task(PebbleTask_KernelBackground),
+                       raised_priority_level | portPRIVILEGE_BIT);
+    }
+  } else {
+    PBL_ASSERTN(s_raised_priority_refcount > 0);
+    if (s_raised_priority_refcount == 0) {
+      taskEXIT_CRITICAL();
+      return;
+    }
+    if (--s_raised_priority_refcount == 0) {
+      vTaskPrioritySet(pebble_task_get_handle_for_task(PebbleTask_KernelBackground),
+                       SYSTEM_TASK_PRIORITY | portPRIVILEGE_BIT);
+    }
+  }
+  taskEXIT_CRITICAL();
 }
 
 bool system_task_is_ready_to_run(void) {
