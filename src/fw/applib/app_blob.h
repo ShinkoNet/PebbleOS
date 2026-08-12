@@ -16,16 +16,22 @@
 //! Returns information about the current app's committed large blob.
 int32_t app_blob_get_info(AppBlobInfo *info_out);
 
-//! Returns currently available shared filesystem space in bytes.
+//! Returns the maximum blob payload that can currently be allocated while
+//! retaining filesystem headroom.
 size_t app_blob_get_free_size(void);
 
-//! Replaces any existing blob with an uncommitted blob of the requested size.
+//! Starts a replacement of the existing blob with the requested payload size.
+//! The committed blob remains readable until app_blob_commit() succeeds. An
+//! unfinished transaction is discarded when its app or worker exits.
 int32_t app_blob_begin(uint32_t size);
 
-//! Writes up to 1024 bytes into an uncommitted blob.
+//! Writes up to 1024 bytes within the size passed to app_blob_begin(). Each
+//! payload byte should be written once because the backing storage is NOR
+//! flash.
 int app_blob_write(uint32_t offset, const void *data, size_t size);
 
-//! Verifies the payload and makes it available to app_blob_read().
+//! Verifies the whole payload against expected_crc32 and publishes it to
+//! app_blob_read().
 int32_t app_blob_commit(uint32_t expected_crc32);
 
 //! Reads bytes from the current app's committed blob.

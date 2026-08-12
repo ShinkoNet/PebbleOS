@@ -12,6 +12,7 @@
 #include "stubs_accel_service.h"
 #include "stubs_analytics.h"
 #include "stubs_animation_service.h"
+#include "stubs_app_blob_service.h"
 #include "stubs_app_cache.h"
 #include "stubs_app_manager.h"
 #include "stubs_app_state.h"
@@ -191,4 +192,3 @@ void test_process_manager__check_SDK_compatible(void) {
     cl_assert_equal_b(process_manager_check_SDK_compatible(i + 1), s_test_cases[i].should_pass);
   }
 }
-
