@@ -19,10 +19,11 @@ Repeated reads reuse one validated PFS session until the app exits or mutates
 its blob. Cartridge cache misses therefore seek directly to their payload
 instead of reopening the file and validating both headers for every line.
 
-On Obelix, the build also assigns 32 KiB more SRAM to the foreground app. This
-lets Pebbleboy retain a 16 KiB ROM-line cache with ample heap margin; Pokémon
-Crystal's idle overworld loop otherwise cycles through about 13.5 KiB of ROM
-each emulated frame and continually rereads it from flash.
+This build keeps PebbleOS's standard 128 KiB foreground-app limit. Pebbleboy's
+compact ROM-line cache, direct framebuffer renderer, and decoupled 60 Hz
+emulation/audio scheduler are designed to run within that normal allocation.
+The custom firmware is currently required only for the app blob API and the
+Obelix speaker fixes; it does not grant Pebbleboy extra app RAM.
 
 Because earlier Pebbles expose smaller app regions, Pebbleboy only supports
 Pebble Time 2 and Pebble 2 Duo.
