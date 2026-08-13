@@ -19,12 +19,6 @@ Repeated reads reuse one validated PFS session until the app exits or mutates
 its blob. Cartridge cache misses therefore seek directly to their payload
 instead of reopening the file and validating both headers for every line.
 
-This build keeps PebbleOS's standard 128 KiB foreground-app limit. Pebbleboy's
-compact ROM-line cache, direct framebuffer renderer, and decoupled 60 Hz
-emulation/audio scheduler are designed to run within that normal allocation.
-The custom firmware is currently required only for the app blob API and the
-Obelix speaker fixes; it does not grant Pebbleboy extra app RAM.
-
 Because earlier Pebbles expose smaller app regions, Pebbleboy only supports
 Pebble Time 2 and Pebble 2 Duo.
 
