@@ -150,10 +150,6 @@ config APP_RAM_FLINT_RUNTIME_SIZE
 
 config APP_RAM_EMERY_SEGMENT_SIZE
     int
-    # Pebbleboy's Obelix firmware trades 32 KiB of kernel headroom for a ROM
-    # cache large enough to retain GBC overworld working sets. Mirror this in
-    # qemu_emery so the memory split is exercised before hardware releases.
-    default 167936 if BOARD_OBELIX || BOARD_QEMU_EMERY
     default 135168
 
 config APP_RAM_EMERY_RUNTIME_SIZE
