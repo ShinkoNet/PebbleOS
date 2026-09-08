@@ -14,12 +14,9 @@
 #include "board/board.h"
 #include "applib/graphics/gtypes.h"
 #include <pbl/drivers/ambient_light.h>
-#include <pbl/drivers/backlight.h>
-#include "mfg/mfg_info.h"
-#include "pbl/os/mutex.h"
+#include "pbl/kernel/mutex.h"
 #include "popups/timeline/peek.h"
 #include "process_management/app_install_manager.h"
-#include "process_management/process_manager.h"
 #include "pbl/services/accel_manager.h"
 #include "pbl/services/touch/touch.h"
 #include "pbl/services/touch/touch_nav_service.h"
@@ -46,7 +43,7 @@
 
 #include <stdbool.h>
 
-static PebbleMutex *s_mutex;
+static PBL_MUTEX_DEFINE(s_mutex);
 
 #define PREF_KEY_CLOCK_24H "clock24h"
 static bool s_clock_24h = false;
@@ -62,6 +59,9 @@ static int16_t s_clock_phone_timezone_id = -1;
 
 #define PREF_KEY_UNITS_DISTANCE "unitsDistance"
 static uint8_t s_units_distance = UnitsDistance_Miles;
+
+#define PREF_KEY_UNITS_WIND "unitsWind"
+static uint8_t s_units_wind = UnitsWind_FromDistance;
 
 #define PREF_KEY_BACKLIGHT_BEHAVIOUR_DEPRECATED "lightBehaviour"
 #define PREF_KEY_BACKLIGHT_ENABLED "lightEnabled"
@@ -319,11 +319,13 @@ static GColor s_theme_highlight_color = GColorVividCerulean;
 #define PREF_KEY_MENU_SCROLL_VIBE_BEHAVIOR "menuScrollVibeBehavior"
 #define PREF_KEY_MUSIC_SHOW_VOLUME_CONTROLS "musicShowVolumeControls"
 #define PREF_KEY_MUSIC_SHOW_PROGRESS_BAR "musicShowProgressBar"
+#define PREF_KEY_MUSIC_SHOW_ALBUM_ART "musicShowAlbumArt"
 
 static bool s_menu_scroll_wrap_around = false;
 static MenuScrollVibeBehavior s_menu_scroll_vibe_behavior = MenuScrollNoVibe;
 static bool s_music_show_volume_controls = true;
 static bool s_music_show_progress_bar = true;
+static bool s_music_show_album_art = false;
 
 // ============================================================================================
 // Handlers for each pref that validate the new setting and store the new value in our globals.
@@ -376,6 +378,15 @@ static bool prv_set_s_units_distance(uint8_t *new_unit) {
     return false;
   }
   s_units_distance = *new_unit;
+  return true;
+};
+
+static bool prv_set_s_units_wind(uint8_t *new_unit) {
+  if (*new_unit >= UnitsWindCount) {
+    s_units_wind = UnitsWind_FromDistance;
+    return false;
+  }
+  s_units_wind = *new_unit;
   return true;
 };
 
@@ -883,6 +894,11 @@ static bool prv_set_s_music_show_progress_bar(bool *enabled) {
   s_music_show_progress_bar = *enabled;
   return true;
 }
+
+static bool prv_set_s_music_show_album_art(bool *enabled) {
+  s_music_show_album_art = *enabled;
+  return true;
+}
   
 // ------------------------------------------------------------------------------------
 // Table of all prefs
@@ -970,7 +986,6 @@ void shell_prefs_init(void) {
   if (BOARD_CONFIG_ACCEL.default_motion_sensitivity != 0) {
     s_motion_sensitivity = BOARD_CONFIG_ACCEL.default_motion_sensitivity;
   }
-  s_mutex = mutex_create();
 
   SettingsFile file = {{0}};
   if (settings_file_open(&file, SHELL_PREFS_FILE_NAME, SHELL_PREFS_FILE_LEN) != S_SUCCESS) {
@@ -1104,7 +1119,7 @@ static bool prv_set_pref_backing(const PrefsTableEntry *entry, const void *value
   }
 
   status_t rv = E_ERROR;
-  mutex_lock(s_mutex);
+  pbl_mutex_lock(&s_mutex, PBL_FOREVER);
   {
     SettingsFile file = {{0}};
     if (settings_file_open(&file, SHELL_PREFS_FILE_NAME, SHELL_PREFS_FILE_LEN) == S_SUCCESS) {
@@ -1116,7 +1131,7 @@ static bool prv_set_pref_backing(const PrefsTableEntry *entry, const void *value
       settings_file_close(&file);
     }
   }
-  mutex_unlock(s_mutex);
+  pbl_mutex_unlock(&s_mutex);
   return (rv == S_SUCCESS);
 }
 
@@ -1184,7 +1199,7 @@ bool prefs_private_read_backing(const uint8_t *key, size_t key_len, void *value,
   }
 
   bool success = false;
-  mutex_lock(s_mutex);
+  pbl_mutex_lock(&s_mutex, PBL_FOREVER);
   {
     SettingsFile file = {{0}};
     if (settings_file_open(&file, SHELL_PREFS_FILE_NAME, SHELL_PREFS_FILE_LEN) == S_SUCCESS) {
@@ -1196,17 +1211,17 @@ bool prefs_private_read_backing(const uint8_t *key, size_t key_len, void *value,
       settings_file_close(&file);
     }
   }
-  mutex_unlock(s_mutex);
+  pbl_mutex_unlock(&s_mutex);
   return success;
 }
 
 
 void prefs_private_lock(void) {
-  mutex_lock(s_mutex);
+  pbl_mutex_lock(&s_mutex, PBL_FOREVER);
 }
 
 void prefs_private_unlock(void) {
-  mutex_unlock(s_mutex);
+  pbl_mutex_unlock(&s_mutex);
 }
 
 
@@ -1265,6 +1280,19 @@ UnitsDistance shell_prefs_get_units_distance(void) {
 void shell_prefs_set_units_distance(UnitsDistance new_unit) {
   uint8_t uint_new_unit = new_unit;
   prv_pref_set(PREF_KEY_UNITS_DISTANCE, &uint_new_unit, sizeof(uint_new_unit));
+}
+
+UnitsWind shell_prefs_get_units_wind(void) {
+  if (s_units_wind == UnitsWind_FromDistance) {
+    return (shell_prefs_get_units_distance() == UnitsDistance_Miles) ? UnitsWind_Mph
+                                                                    : UnitsWind_KmH;
+  }
+  return s_units_wind;
+}
+
+void shell_prefs_set_units_wind(UnitsWind new_unit) {
+  uint8_t uint_new_unit = new_unit;
+  prv_pref_set(PREF_KEY_UNITS_WIND, &uint_new_unit, sizeof(uint_new_unit));
 }
 
 void shell_prefs_set_clock_24h_style(bool is24h) {
@@ -1411,9 +1439,11 @@ BacklightPreset backlight_get_preset(void) {
     return BacklightPreset_Advanced;
   }
   // A preset is only reported while the underlying settings still match it;
-  // they can drift independently (e.g. via phone sync).
+  // they can drift independently (e.g. via phone sync). Every concrete preset
+  // implies the backlight is on, so a disabled backlight also means Advanced.
   const BacklightPresetSettings *settings = &s_backlight_preset_settings[preset];
-  if ((s_backlight_ambient_sensor_enabled != settings->ambient_sensor_enabled) ||
+  if (!s_backlight_enabled ||
+      (s_backlight_ambient_sensor_enabled != settings->ambient_sensor_enabled) ||
 #ifdef CONFIG_DYNAMIC_BACKLIGHT
       (s_backlight_dynamic_mode != settings->dynamic_mode) ||
 #endif
@@ -1434,6 +1464,11 @@ void backlight_set_preset(BacklightPreset preset) {
   prv_pref_set(PREF_KEY_BACKLIGHT_PRESET, &value, sizeof(value));
   if (preset == BacklightPreset_Advanced) {
     return;
+  }
+  // A concrete preset must re-enable the backlight: the only off toggle lives
+  // in the Advanced-only submenu, which these presets hide.
+  if (!backlight_is_enabled()) {
+    backlight_set_enabled(true);
   }
   const BacklightPresetSettings *settings = &s_backlight_preset_settings[preset];
   backlight_set_ambient_sensor_enabled(settings->ambient_sensor_enabled);
@@ -1773,6 +1808,16 @@ void system_theme_set_content_size(PreferredContentSize content_size) {
   }
   const uint8_t content_size_uint = content_size;
   prv_pref_set(PREF_KEY_TEXT_STYLE, &content_size_uint, sizeof(content_size_uint));
+
+  // Watch-side sets bypass the blob-db path, so notify subscribed UI here too.
+  PebbleEvent pref_event = {
+    .type = PEBBLE_PREF_CHANGE_EVENT,
+    .pref_change = {
+      .key = PREF_KEY_TEXT_STYLE,
+      .key_len = sizeof(PREF_KEY_TEXT_STYLE),
+    },
+  };
+  event_put(&pref_event);
 }
 
 PreferredContentSize system_theme_get_content_size(void) {
@@ -1802,6 +1847,7 @@ ShellLanguage shell_prefs_get_language(void) {
 
 uint32_t shell_prefs_get_language_resource_id(void) {
   switch (shell_prefs_get_language()) {
+#ifdef CONFIG_SERVICE_I18N_BUILTIN_LANGUAGES
     case ShellLanguageCatalan:
       return RESOURCE_ID_STRINGS_CA_ES;
     case ShellLanguageGerman:
@@ -1818,6 +1864,7 @@ uint32_t shell_prefs_get_language_resource_id(void) {
       return RESOURCE_ID_STRINGS_PT_PT;
     case ShellLanguagePolish:
       return RESOURCE_ID_STRINGS_PL_PL;
+#endif
     case ShellLanguageEnglish:
     case ShellLanguageInstalledPack:
     case ShellLanguageCount:
@@ -2163,4 +2210,12 @@ bool shell_prefs_get_music_show_progress_bar(void) {
 
 void shell_prefs_set_music_show_progress_bar(bool enable) {
   prv_pref_set(PREF_KEY_MUSIC_SHOW_PROGRESS_BAR, &enable, sizeof(enable));
+}
+
+bool shell_prefs_get_music_show_album_art(void) {
+  return s_music_show_album_art;
+}
+
+void shell_prefs_set_music_show_album_art(bool enable) {
+  prv_pref_set(PREF_KEY_MUSIC_SHOW_ALBUM_ART, &enable, sizeof(enable));
 }

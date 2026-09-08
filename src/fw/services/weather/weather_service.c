@@ -7,14 +7,12 @@
 #include "applib/event_service_client.h"
 #include "kernel/events.h"
 #include "kernel/pbl_malloc.h"
-#include "pbl/os/mutex.h"
+#include "pbl/kernel/mutex.h"
 #include "pbl/services/bluetooth/bluetooth_persistent_storage.h"
 #include "pbl/services/comm_session/session_remote_version.h"
 #include "pbl/services/blob_db/watch_app_prefs_db.h"
 #include "pbl/services/blob_db/weather_db.h"
-#include "pbl/services/weather/weather_types.h"
 #include <pbl/logging/logging.h>
-#include "system/passert.h"
 
 PBL_LOG_MODULE_DEFINE(service_weather, CONFIG_SERVICE_WEATHER_LOG_LEVEL);
 
@@ -28,7 +26,7 @@ typedef struct WeatherDBIteratorContext {
   SerializedWeatherAppPrefs *serialized_prefs;
 } WeatherDBIteratorContext;
 
-static PebbleMutex *s_mutex;
+static PBL_MUTEX_DEFINE(s_mutex);
 static WeatherLocationForecast *s_default_forecast;
 
 static bool prv_entry_update_time_too_old_to_be_valid(const time_t update_time_utc) {
@@ -39,12 +37,20 @@ static bool prv_entry_update_time_too_old_to_be_valid(const time_t update_time_u
 static bool prv_fill_forecast_from_entry(WeatherDBEntry *entry,
                                          WeatherLocationForecast *forecast_out) {
   PascalString16List pstring16_list;
-  pstring_project_list_on_serialized_array(&pstring16_list, &entry->pstring16s);
+  // v3 and v4 records place the trailing strings at different offsets; locate
+  // them by the record's version (see weather_db.h).
+  pstring_project_list_on_serialized_array(&pstring16_list, weather_db_entry_get_strings(entry));
   PascalString16 *location_pstring =
       pstring_get_pstring16_from_list(&pstring16_list, WeatherDbStringIndex_LocationName);
 
   PascalString16 *phrase_pstring =
       pstring_get_pstring16_from_list(&pstring16_list, WeatherDbStringIndex_ShortPhrase);
+
+  // The string block is phone-controlled; a record can carry fewer strings than we index.
+  if (!location_pstring || !phrase_pstring) {
+    PBL_LOG_ERR("Weather entry is missing its location/phrase strings");
+    return false;
+  }
 
   const bool is_valid_entry_update_time =
       (entry->last_update_time_utc != WEATHER_SERVICE_INVALID_DATA_LAST_UPDATE_TIME);
@@ -156,7 +162,7 @@ static bool prv_get_default_location_key(WeatherDBKey *key_out) {
 }
 
 static void prv_update_default_location_cache(void) {
-  mutex_lock(s_mutex);
+  pbl_mutex_lock(&s_mutex, PBL_FOREVER);
   weather_service_destroy_default_forecast(s_default_forecast);
   s_default_forecast = NULL;
 
@@ -186,11 +192,11 @@ static void prv_update_default_location_cache(void) {
 free_entry:
   task_free(entry);
 cleanup:
-  mutex_unlock(s_mutex);
+  pbl_mutex_unlock(&s_mutex);
 }
 
 WeatherLocationForecast *weather_service_create_default_forecast(void) {
-  mutex_lock(s_mutex);
+  pbl_mutex_lock(&s_mutex, PBL_FOREVER);
   WeatherLocationForecast *forecast = NULL;
   if (s_default_forecast) {
     forecast = task_zalloc_check(sizeof(WeatherLocationForecast));
@@ -204,7 +210,7 @@ WeatherLocationForecast *weather_service_create_default_forecast(void) {
     strncpy(forecast->current_weather_phrase, s_default_forecast->current_weather_phrase,
             phrase_length);
   }
-  mutex_unlock(s_mutex);
+  pbl_mutex_unlock(&s_mutex);
   return forecast;
 }
 
@@ -252,7 +258,6 @@ static void prv_blobdb_event_handler(PebbleEvent *event, void *context) {
 }
 
 void weather_service_init(void) {
-  s_mutex = mutex_create();
 
   static EventServiceInfo s_blobdb_event_info = {
     .type = PEBBLE_BLOBDB_EVENT,

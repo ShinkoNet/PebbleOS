@@ -8,7 +8,7 @@
 #include <string.h>
 
 #include "pbl/drivers/task_watchdog.h"
-#include "pbl/os/mutex.h"
+#include "pbl/kernel/mutex.h"
 #include "pbl/services/filesystem/pfs.h"
 #include "pbl/util/crc32.h"
 
@@ -43,7 +43,7 @@ typedef struct {
   AppBlobHeader header;
 } AppBlobReadSession;
 
-static PebbleMutex *s_mutex;
+static PBL_MUTEX_DEFINE(s_mutex);
 static AppBlobTransaction s_transaction;
 static AppBlobReadSession s_read_session;
 
@@ -171,9 +171,6 @@ static status_t prv_abort_transaction(void) {
 }
 
 void app_blob_service_init(void) {
-  if (!s_mutex) {
-    s_mutex = mutex_create();
-  }
   s_transaction = (AppBlobTransaction){.fd = -1};
   s_read_session = (AppBlobReadSession){.fd = -1};
 }
@@ -183,13 +180,13 @@ status_t app_blob_service_get_info(const Uuid *uuid, AppBlobInfo *info_out) {
     return E_INVALID_ARGUMENT;
   }
 
-  mutex_lock(s_mutex);
+  pbl_mutex_lock(&s_mutex, PBL_FOREVER);
   if (s_read_session.active && uuid_equal(&s_read_session.uuid, uuid)) {
     *info_out = (AppBlobInfo){
         .size = s_read_session.header.size,
         .crc32 = s_read_session.header.crc32,
     };
-    mutex_unlock(s_mutex);
+    pbl_mutex_unlock(&s_mutex);
     return S_SUCCESS;
   }
 
@@ -215,14 +212,14 @@ status_t app_blob_service_get_info(const Uuid *uuid, AppBlobInfo *info_out) {
   };
 
 cleanup:
-  mutex_unlock(s_mutex);
+  pbl_mutex_unlock(&s_mutex);
   return status;
 }
 
 size_t app_blob_service_get_free_size(void) {
-  mutex_lock(s_mutex);
+  pbl_mutex_lock(&s_mutex, PBL_FOREVER);
   size_t size = prv_get_free_size();
-  mutex_unlock(s_mutex);
+  pbl_mutex_unlock(&s_mutex);
   return size;
 }
 
@@ -231,7 +228,7 @@ status_t app_blob_service_begin(const Uuid *uuid, PebbleTask owner, uint32_t siz
     return E_INVALID_ARGUMENT;
   }
 
-  mutex_lock(s_mutex);
+  pbl_mutex_lock(&s_mutex, PBL_FOREVER);
   status_t status = S_SUCCESS;
   if (s_transaction.active) {
     if (s_transaction.owner != owner) {
@@ -303,7 +300,7 @@ status_t app_blob_service_begin(const Uuid *uuid, PebbleTask owner, uint32_t siz
   };
 
 cleanup:
-  mutex_unlock(s_mutex);
+  pbl_mutex_unlock(&s_mutex);
   return status;
 }
 
@@ -313,7 +310,7 @@ int app_blob_service_write(const Uuid *uuid, PebbleTask owner, uint32_t offset, 
     return E_INVALID_ARGUMENT;
   }
 
-  mutex_lock(s_mutex);
+  pbl_mutex_lock(&s_mutex, PBL_FOREVER);
   int result = E_INVALID_OPERATION;
   if (!s_transaction.active) {
     goto cleanup;
@@ -339,7 +336,7 @@ int app_blob_service_write(const Uuid *uuid, PebbleTask owner, uint32_t offset, 
   result = written == (int)size ? written : E_ERROR;
 
 cleanup:
-  mutex_unlock(s_mutex);
+  pbl_mutex_unlock(&s_mutex);
   return result;
 }
 
@@ -348,7 +345,7 @@ status_t app_blob_service_commit(const Uuid *uuid, PebbleTask owner, uint32_t ex
     return E_INVALID_ARGUMENT;
   }
 
-  mutex_lock(s_mutex);
+  pbl_mutex_lock(&s_mutex, PBL_FOREVER);
   status_t status = E_INVALID_OPERATION;
   if (!s_transaction.active) {
     goto cleanup;
@@ -410,7 +407,7 @@ status_t app_blob_service_commit(const Uuid *uuid, PebbleTask owner, uint32_t ex
   }
 
 cleanup:
-  mutex_unlock(s_mutex);
+  pbl_mutex_unlock(&s_mutex);
   return status;
 }
 
@@ -419,7 +416,7 @@ int app_blob_service_read(const Uuid *uuid, uint32_t offset, void *data, size_t 
     return E_INVALID_ARGUMENT;
   }
 
-  mutex_lock(s_mutex);
+  pbl_mutex_lock(&s_mutex, PBL_FOREVER);
   int result = prv_open_read_session(uuid);
   if (FAILED(result)) {
     goto cleanup;
@@ -446,7 +443,7 @@ int app_blob_service_read(const Uuid *uuid, uint32_t offset, void *data, size_t 
   }
 
 cleanup:
-  mutex_unlock(s_mutex);
+  pbl_mutex_unlock(&s_mutex);
   return result;
 }
 
@@ -455,7 +452,7 @@ static status_t prv_delete(const Uuid *uuid, bool force, PebbleTask owner) {
     return E_INVALID_ARGUMENT;
   }
 
-  mutex_lock(s_mutex);
+  pbl_mutex_lock(&s_mutex, PBL_FOREVER);
   status_t status = S_SUCCESS;
   bool aborted_transaction = false;
   if (s_transaction.active && uuid_equal(&s_transaction.uuid, uuid)) {
@@ -484,7 +481,7 @@ static status_t prv_delete(const Uuid *uuid, bool force, PebbleTask owner) {
   }
 
 cleanup:
-  mutex_unlock(s_mutex);
+  pbl_mutex_unlock(&s_mutex);
   return status;
 }
 
@@ -501,12 +498,12 @@ void app_blob_service_process_cleanup(const Uuid *uuid, PebbleTask owner) {
     return;
   }
 
-  mutex_lock(s_mutex);
+  pbl_mutex_lock(&s_mutex, PBL_FOREVER);
   prv_close_read_session_for_uuid(uuid);
   if (prv_transaction_owned_by(uuid, owner)) {
     prv_abort_transaction();
   }
-  mutex_unlock(s_mutex);
+  pbl_mutex_unlock(&s_mutex);
 }
 
 #if UNITTEST

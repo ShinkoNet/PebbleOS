@@ -4,6 +4,7 @@
   PREFS_MACRO(PREF_KEY_CLOCK_TIME_SOURCE_IS_MANUAL, s_clock_time_source_is_manual)
   PREFS_MACRO(PREF_KEY_CLOCK_PHONE_TIMEZONE_ID, s_clock_phone_timezone_id)
   PREFS_MACRO(PREF_KEY_UNITS_DISTANCE, s_units_distance)
+  PREFS_MACRO(PREF_KEY_UNITS_WIND, s_units_wind)
   PREFS_MACRO(PREF_KEY_BACKLIGHT_ENABLED, s_backlight_enabled)
   PREFS_MACRO(PREF_KEY_BACKLIGHT_AMBIENT_SENSOR_ENABLED, s_backlight_ambient_sensor_enabled)
   PREFS_MACRO(PREF_KEY_BACKLIGHT_TIMEOUT_MS, s_backlight_timeout_ms)
@@ -72,3 +73,4 @@
   PREFS_MACRO(PREF_KEY_MENU_SCROLL_VIBE_BEHAVIOR, s_menu_scroll_vibe_behavior)
   PREFS_MACRO(PREF_KEY_MUSIC_SHOW_VOLUME_CONTROLS, s_music_show_volume_controls)
   PREFS_MACRO(PREF_KEY_MUSIC_SHOW_PROGRESS_BAR, s_music_show_progress_bar)
+  PREFS_MACRO(PREF_KEY_MUSIC_SHOW_ALBUM_ART, s_music_show_album_art)

@@ -14,28 +14,18 @@
 #include "applib/ui/recognizer/recognizer_list.h"
 #include "applib/ui/recognizer/recognizer_manager.h"
 #include "applib/ui/recognizer/touch_nav.h"
-#include "applib/ui/click.h"
 #include "applib/ui/click_internal.h"
-#include "applib/ui/window_private.h"
 #include "applib/ui/window_stack.h"
-#include "applib/touch_service.h"
 #include "applib/touch_service_private.h"
 #include "pbl/services/touch/touch.h"
 #include "pbl/drivers/button_id.h"
-#include "applib/unobstructed_area_service.h"
 #include "kernel/util/segment.h"
 #include "process_management/app_install_types.h"
 #include "process_management/app_manager.h"
 #include "process_management/process_loader.h"
-#include "process_management/process_manager.h"
-#include "pbl/services/i18n/i18n.h"
-#include "pbl/services/persist.h"
-#include "syscall/syscall_internal.h"
 #include "system/passert.h"
 #include "pbl/util/attributes.h"
 #include "tinymt32.h"
-
-#include <string.h>
 
 typedef struct {
   Heap heap;
@@ -201,6 +191,11 @@ static bool prv_app_touch_nav_top_overrides_back(void *ctx) {
   return top && top->overrides_back_button;
 }
 
+static bool prv_app_touch_nav_top_tap_requires_action_bar(void *ctx) {
+  Window *top = app_window_stack_get_top_window();
+  return top && top->touch_tap_requires_action_bar;
+}
+
 static bool prv_app_touch_nav_top_bridge_disabled(void *ctx) {
   Window *top = app_window_stack_get_top_window();
   const bool window_opt_out = top && top->touch_bridge_disabled;
@@ -226,6 +221,7 @@ static void prv_app_touch_nav_emit_button(void *ctx, ButtonId button) {
 static const TouchNavOps s_app_touch_nav_ops = {
   .is_animating = prv_app_touch_nav_is_animating,
   .top_overrides_back = prv_app_touch_nav_top_overrides_back,
+  .top_tap_requires_action_bar = prv_app_touch_nav_top_tap_requires_action_bar,
   .top_bridge_disabled = prv_app_touch_nav_top_bridge_disabled,
   .pop_top = prv_app_touch_nav_pop_top,
   .emit_button = prv_app_touch_nav_emit_button,

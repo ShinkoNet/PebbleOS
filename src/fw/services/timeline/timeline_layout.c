@@ -3,7 +3,6 @@
 
 #include "pbl/services/timeline/timeline_layout.h"
 
-#include "applib/graphics/graphics.h"
 #include "applib/preferred_content_size.h"
 #include "applib/ui/ui.h"
 #include "apps/system/timeline/text_node.h"
@@ -11,13 +10,11 @@
 #include "kernel/pbl_malloc.h"
 #include "kernel/ui/kernel_ui.h"
 #include "popups/timeline/peek.h"
-#include "process_management/app_install_manager.h"
 #include "process_state/app_state/app_state.h"
 #include "resource/timeline_resource_ids.auto.h"
 #include "pbl/services/i18n/i18n.h"
 #include "pbl/services/timeline/timeline_resources.h"
 #include "shell/system_theme.h"
-#include <pbl/logging/logging.h>
 #include "pbl/util/size.h"
 #include "pbl/util/string.h"
 
@@ -387,7 +384,15 @@ static GTextNode *prv_create_all_day_text_node(const TimelineLayout *layout) {
     .text.style_font = TextStyleFont_Title,
     .text.fixed_lines = 1,
     .text.alignment = PBL_IF_RECT_ELSE(LayoutTextAlignment_Left, LayoutTextAlignment_Right),
-    .text.extent.offset.y = -13,
+    // The font leaves blank space above the text; this pulls the header back up. Large rect
+    // displays need less of a pull than the others.
+    .text.extent.offset.y = PREFERRED_CONTENT_SIZE_SWITCH(PreferredContentSizeDefault,
+      /* This is the same as Medium until Small is designed */
+      /* small */ -13,
+      /* medium */ -13,
+      /* large */ PBL_IF_RECT_ELSE(-8, -13),
+      /* This is the same as Large until ExtraLarge is designed */
+      /* extralarge */ PBL_IF_RECT_ELSE(-8, -13)),
     .text.extent.margin.h = -7,
   };
   GTextNodeText *text_node =

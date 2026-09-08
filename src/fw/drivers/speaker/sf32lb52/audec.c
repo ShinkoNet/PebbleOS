@@ -4,6 +4,7 @@
 #include <pbl/drivers/speaker/sf32lb52/audio_definitions.h>
 #include "kernel/pbl_malloc.h"
 #include "pbl/mcu/cache.h"
+#include "pbl/kernel/irq.h"
 #include "system/passert.h"
 #include <pbl/logging/logging.h>
 #include "pbl/util/misc.h"
@@ -383,17 +384,22 @@ void audec_start(AudioDevice* audio_device, AudioTransCB cb) {
     HAL_NVIC_EnableIRQ(audio_device->audec_dma_irq);
     state->tx_instanc = HAL_AUDCODEC_DAC_CH0;
 
+    // Digital gain must be programmed before the DAC path opens, otherwise
+    // startup transients escape at the codec's default 0 dB gain.
+    prv_apply_volume(audio_device);
+
     /* enable AUDCODEC at last*/
     __HAL_AUDCODEC_DAC_ENABLE(haudcodec);
 
     HAL_AUDCODEC_Config_DACPath(haudcodec, 1);
     HAL_AUDCODEC_Config_Analog_DACPath(haudcodec->Init.dac_cfg.dac_clk);
-    HAL_AUDCODEC_Config_DACPath(haudcodec, 0);
+    // Volume 0 muted the path in prv_apply_volume(); don't reopen it.
+    if (state->volume != 0) {
+        HAL_AUDCODEC_Config_DACPath(haudcodec, 0);
+    }
 
     hwp_audcodec->DAC_CH0_CFG_EXT &= ~AUDCODEC_DAC_CH0_CFG_EXT_RAMP_EN_Msk;
     hwp_audcodec->DAC_CH1_CFG_EXT &= ~AUDCODEC_DAC_CH1_CFG_EXT_RAMP_EN_Msk;
-
-    prv_apply_volume(audio_device);
 }
 
 uint32_t audec_write(AudioDevice* audio_device, void *writeBuf, uint32_t size) {
@@ -405,7 +411,7 @@ uint32_t audec_write(AudioDevice* audio_device, void *writeBuf, uint32_t size) {
     // not atomic, so an interrupt here can both expose a partially copied block
     // to DMA and lose one side of the data_length update. Keep the short write
     // transaction atomic with respect to the audio DMA interrupt.
-    portENTER_CRITICAL();
+    pbl_irq_lock();
     if (state->circ_buffer_storage) {
         free_size = circular_buffer_get_write_space_remaining(&state->circ_buffer);
         uint16_t to_write = (size > free_size) ? (uint16_t)free_size : (uint16_t)size;
@@ -414,7 +420,7 @@ uint32_t audec_write(AudioDevice* audio_device, void *writeBuf, uint32_t size) {
         }
         free_size = circular_buffer_get_write_space_remaining(&state->circ_buffer);
     }
-    portEXIT_CRITICAL();
+    pbl_irq_unlock();
 
     return free_size;
 }
@@ -498,7 +504,6 @@ static void prv_dma_request_processing(AudioDeviceState* state) {
                 &system_task_switch_context)) {
             state->callback_pending = false;
         }
-        portEND_SWITCHING_ISR(system_task_switch_context);
     }
 }
 

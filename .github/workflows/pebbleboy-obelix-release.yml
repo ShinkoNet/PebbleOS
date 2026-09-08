@@ -35,7 +35,7 @@ jobs:
           fetch-depth: 0
           ref: main
 
-      - name: Rebase patches and create source tag
+      - name: Merge upstream and create source tag
         id: sync
         env:
           GH_TOKEN: ${{ github.token }}
@@ -45,7 +45,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git remote add upstream https://github.com/coredevices/PebbleOS.git
-          git fetch upstream main --tags --force
+          git fetch upstream main --tags
 
           upstream_tag="$INPUT_UPSTREAM_TAG"
           if [ -z "$upstream_tag" ]; then
@@ -75,11 +75,11 @@ jobs:
 
           old_base=$(tr -d '[:space:]' < .pebbleboy-upstream-base)
           if [ "$old_base" != "$upstream_tag" ]; then
-            git rebase --onto "$upstream_tag" "$old_base" main
+            git merge --no-edit "$upstream_tag"
             printf '%s\n' "$upstream_tag" > .pebbleboy-upstream-base
             git add .pebbleboy-upstream-base
             git commit -m "Track PebbleOS $upstream_tag"
-            git push --force-with-lease origin HEAD:main
+            git push origin HEAD:main
           fi
 
           git tag -a "$release_tag" -m "Pebbleboy Obelix firmware based on $upstream_tag"
@@ -91,7 +91,7 @@ jobs:
     if: needs.sync.outputs.build_release == 'true'
     runs-on: ubuntu-24.04
     container:
-      image: ghcr.io/coredevices/pebbleos-docker:v6
+      image: ghcr.io/coredevices/pebbleos-docker:v7
     strategy:
       fail-fast: false
       matrix:
@@ -125,13 +125,13 @@ jobs:
 
       - name: Configure
         run: >-
-          ./waf configure --board '${{ matrix.board }}'
+          pbl configure --board '${{ matrix.board }}'
           -DCONFIG_FIRMWARE_SLOT=${{ matrix.slot }} -DCONFIG_RELEASE=y
 
       - name: Build and bundle
         run: |
-          ./waf build
-          ./waf bundle
+          pbl build
+          pbl bundle
 
       - name: Collect artifacts
         env:

@@ -6,7 +6,6 @@
 #include "notifications_presented_list.h"
 #include "notification_window_private.h"
 
-#include "applib/fonts/fonts.h"
 #include "applib/ui/action_button.h"
 #include "applib/ui/action_menu_window.h"
 #include "applib/ui/app_window_stack.h"
@@ -22,10 +21,10 @@
 #include "kernel/event_loop.h"
 #include "kernel/pbl_malloc.h"
 #include "kernel/ui/modals/modal_manager.h"
-#include "pbl/os/mutex.h"
+#include "pbl/kernel/mutex.h"
+#include "process_management/process_manager.h"
 #include "process_state/app_state/app_state.h"
 #include "resource/resource_ids.auto.h"
-#include "pbl/services/analytics/analytics.h"
 #include "pbl/services/bluetooth/bluetooth_persistent_storage.h"
 #include "pbl/services/comm_session/session.h"
 #include "pbl/services/evented_timer.h"
@@ -40,7 +39,9 @@
 #include "pbl/services/notifications/alerts_preferences_private.h"
 #include "pbl/services/notifications/alerts_private.h"
 #include "pbl/services/notifications/ancs/ancs_filtering.h"
+#include "pbl/services/imaging.h"
 #include "pbl/services/notifications/do_not_disturb.h"
+#include "pbl/services/notifications/notification_image.h"
 #include "pbl/services/notifications/notification_storage.h"
 #include "pbl/services/notifications/notification_types.h"
 #include "pbl/services/notifications/notifications.h"
@@ -51,9 +52,7 @@
 #include "pbl/services/timeline/timeline_actions.h"
 #include "pbl/services/timeline/timeline_resources.h"
 #include <pbl/logging/logging.h>
-#include "system/passert.h"
 #include "pbl/util/math.h"
-#include "pbl/util/trig.h"
 
 #include <inttypes.h>
 #include <stdio.h>
@@ -74,7 +73,7 @@ static const unsigned int QUICK_DND_HOLD_MS = 800;
 T_STATIC NotificationWindowData s_notification_window_data;
 
 T_STATIC bool s_in_use = false;
-PebbleMutex *s_notification_window_mutex;
+struct pbl_mutex s_notification_window_mutex;
 
 static bool prv_should_provide_action_menu_for_item(NotificationWindowData *data,
                                                     const TimelineItem *item);
@@ -685,7 +684,7 @@ static bool prv_should_show_action_in_action_menu(NotificationWindowData *data,
     } else {
       // If we are in the notifications app, only show non ANCS actions. Pre iOS9 we can't really
       // know if the notification is still in the notification center or not, so we play it safe
-      // and only show non ACNS actions. Once iOS9 is more widespread we can look at updating this
+      // and only show non ANCS actions. Once iOS9 is more widespread we can look at updating this
       return !timeline_item_action_is_ancs(action);
     }
   } else { // Android
@@ -1151,6 +1150,7 @@ static void prv_window_unload(Window *window) {
   animation_unschedule(data->peek_animation);
 
   swap_layer_deinit(&data->swap_layer);
+  notification_image_clear();
   status_bar_layer_deinit(&data->status_layer);
   notifications_presented_list_deinit(prv_handle_presented_notif_deinit, NULL);
   gbitmap_deinit(&data->dnd_icon);
@@ -1166,12 +1166,49 @@ static void prv_window_unload(Window *window) {
 // Callback Handlers
 //////////////////////
 
+#if NOTIFICATION_IMAGE_SUPPORTED
+static void prv_redraw_current_layout(void *unused) {
+  LayoutLayer *layout = swap_layer_get_current_layout(&s_notification_window_data.swap_layer);
+  if (s_in_use && layout) {
+    layer_mark_dirty(&layout->layer);
+  }
+}
+
+static void prv_imaging_notification_received(uint8_t token, GBitmap *bitmap) {
+  if (!notification_image_store(token, bitmap) || !s_in_use) {
+    return;
+  }
+  // Delivery lands on KernelMain, which is where the modal renders; the notification history app
+  // owns its window on the App task and has to mark it dirty there.
+  if (s_notification_window_data.is_modal) {
+    prv_redraw_current_layout(NULL);
+  } else {
+    process_manager_send_callback_event_to_process(PebbleTask_App, prv_redraw_current_layout, NULL);
+  }
+}
+
+static void prv_maybe_request_notification_image(LayoutLayer *layout, TimelineItem *item) {
+  GSize size;
+  uint8_t token;
+  if (!notification_layout_get_image_size(layout, &size) ||
+      !imaging_is_type_supported(ImagingImageTypeNotification) ||
+      !notification_image_claim(&item->header.id, &token)) {
+    return;
+  }
+  imaging_request_notification_image(token, ImagingFormat4BitPalette, size.w, size.h,
+                                     &item->header.id);
+}
+#endif
+
 static void prv_layout_did_appear_handler(SwapLayer *swap_layer, LayoutLayer *layout,
                                           int8_t rel_change, void *context) {
   NotificationWindowData *data = context;
   TimelineItem *n = layout_get_context(layout);
   Uuid *id = &n->header.id;
   notifications_presented_list_set_current(id);
+#if NOTIFICATION_IMAGE_SUPPORTED
+  prv_maybe_request_notification_image(layout, n);
+#endif
   if (data->first_notif_loaded || !data->is_modal) {
     layer_set_hidden(&data->action_button_layer, !prv_should_provide_action_menu_for_item(data, n));
   }
@@ -1268,7 +1305,7 @@ static void prv_init_notification_window(bool is_modal) {
   // init_notification_window() can be called from KernelMain when displaying an incoming
   // notification and also from the notifications.c application task. Grab a mutex here so
   // that we don't ever get two instances of it at a time.
-  mutex_lock(s_notification_window_mutex);
+  pbl_mutex_lock(&s_notification_window_mutex, PBL_FOREVER);
   if (s_in_use) {
     goto fail;
   }
@@ -1367,7 +1404,7 @@ static void prv_init_notification_window(bool is_modal) {
   notifications_presented_list_init();
 
 fail:
-  mutex_unlock(s_notification_window_mutex);
+  pbl_mutex_unlock(&s_notification_window_mutex);
 }
 
 void notification_window_init(bool is_modal) {
@@ -1398,7 +1435,7 @@ void notification_window_add_notification_by_id(Uuid *id) {
   prv_notification_window_add_notification(id, NotificationMobile);
 }
 
-//! The animate mode slides the notificaiton in from the top as if it was a new notification.
+//! The animate mode slides the notification in from the top as if it was a new notification.
 void notification_window_focus_notification(Uuid *id, bool animated) {
   NotificationWindowData *data = &s_notification_window_data;
 
@@ -1431,13 +1468,19 @@ void notification_window_focus_notification(Uuid *id, bool animated) {
 }
 
 void notification_window_service_init(void) {
-  s_notification_window_mutex = mutex_create();
+  pbl_mutex_init(&s_notification_window_mutex);
   s_notification_window_data.pop_timer_id = EVENTED_TIMER_INVALID_ID;
+  // Unconditional: prv_window_unload clears the slot on every platform, so the lock has to exist
+  // even where images are never fetched.
+  notification_image_service_init();
+#if NOTIFICATION_IMAGE_SUPPORTED
+  imaging_register_handler(ImagingImageTypeNotification, prv_imaging_notification_received);
+#endif
 }
 
 
 //////////////////
-// Event Handers
+// Event Handlers
 //////////////////
 
 static void prv_handle_action_result(PebbleSysNotificationActionResult *action_result) {
@@ -1565,7 +1608,7 @@ static void prv_handle_notification_added_common(Uuid *id, NotificationType type
       const bool should_animate = !do_not_disturb_is_active();
       notification_window_focus_notification(id, should_animate);
     } else {
-      // If we are inserting into the middle of this list, just reaload the swap layer so the
+      // If we are inserting into the middle of this list, just reload the swap layer so the
       // number of notifications displayed is correct
       prv_reload_swap_layer(data);
     }

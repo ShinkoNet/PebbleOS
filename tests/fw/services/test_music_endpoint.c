@@ -5,6 +5,7 @@
 
 #include "pbl/services/music.h"
 #include "pbl/services/music_endpoint.h"
+#include "pbl/services/music_endpoint_types.h"
 #include "pbl/services/music_internal.h"
 
 #include "pbl/services/comm_session/session.h"
@@ -28,6 +29,7 @@
 #include "stubs_pbl_malloc.h"
 #include "stubs_bt_lock.h"
 #include "stubs_hexdump.h"
+#include "stubs_imaging.h"
 #include "stubs_logging.h"
 #include "stubs_mutex.h"
 #include "stubs_serial.h"
@@ -35,16 +37,21 @@
 
 void ams_music_disconnect(void) {}
 
+
 extern void music_protocol_msg_callback(CommSession *session, const uint8_t* msg, size_t length);
 
 // Helpers
 ///////////////////////////////////////////////////////////
 
-static void prv_receive_app_info_event(bool is_android) {
+static void prv_receive_app_info_event_for_os(RemoteOS os) {
   const PebbleRemoteAppInfoEvent app_info_event = (const PebbleRemoteAppInfoEvent) {
-    .os = is_android ? RemoteOSAndroid : RemoteOSiOS,
+    .os = os,
   };
   music_endpoint_handle_mobile_app_info_event(&app_info_event);
+}
+
+static void prv_receive_app_info_event(bool is_android) {
+  prv_receive_app_info_event_for_os(is_android ? RemoteOSAndroid : RemoteOSiOS);
 }
 
 static void prv_receive_app_event(bool is_open) {
@@ -249,6 +256,22 @@ void test_music_endpoint__ignore_now_playing_from_ios_app(void) {
   prv_receive_and_assert_all(false /* expect_is_handled*/);
 }
 
+void test_music_endpoint__request_now_playing_from_desktop_app(void) {
+  fake_transport_set_sent_cb(s_transport, &prv_assert_now_playing_requested_cb);
+
+  // A desktop app has no Apple Media Service to read instead:
+  prv_receive_app_info_event_for_os(RemoteOSX);
+
+  fake_comm_session_process_send_next();
+  cl_assert_equal_b(s_now_playing_requested, true);
+}
+
+void test_music_endpoint__ignore_now_playing_from_app_of_unknown_os(void) {
+  // An app that does not say what it runs on could be an iOS one:
+  prv_receive_app_info_event_for_os(RemoteOSUnknown);
+  prv_receive_and_assert_all(false /* expect_is_handled*/);
+}
+
 void test_music_endpoint__request_now_playing_upon_connect(void) {
   fake_transport_set_sent_cb(s_transport, &prv_assert_now_playing_requested_cb);
 
@@ -340,6 +363,24 @@ void test_music_endpoint__supported_capabilities(void) {
     }
     cl_assert_equal_b(music_is_command_supported(cmd), expect_supported);
   }
+}
+
+void test_music_endpoint__skip_seeks_within_track(void) {
+  prv_receive_app_info_event(true /* is_android */);
+
+  // Phone apps that predate the flag send the shorter message.
+  uint8_t no_flags[] = { 0x11, 0x01, 0xAA, 0x00, 0x00, 0x00, 0xAA, 0x00, 0x00, 0x00, 0x01, 0x01 };
+  prv_receive_pp_data(no_flags, sizeof(no_flags));
+  cl_assert_equal_b(music_skip_seeks_within_track(), false);
+
+  uint8_t seeks[] = { 0x11, 0x01, 0xAA, 0x00, 0x00, 0x00, 0xAA, 0x00, 0x00, 0x00, 0x01, 0x01,
+                      MusicEndpointSkipSeeksWithinTrack };
+  prv_receive_pp_data(seeks, sizeof(seeks));
+  cl_assert_equal_b(music_skip_seeks_within_track(), true);
+
+  // Back to a player that changes track.
+  prv_receive_pp_data(no_flags, sizeof(no_flags));
+  cl_assert_equal_b(music_skip_seeks_within_track(), false);
 }
 
 void test_music_endpoint__reduced_latency(void) {

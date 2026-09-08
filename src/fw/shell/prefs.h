@@ -56,6 +56,18 @@ typedef enum UnitsDistance {
 UnitsDistance shell_prefs_get_units_distance(void);
 void shell_prefs_set_units_distance(UnitsDistance newUnit);
 
+// Wind has its own unit so the UK (metric, but mph wind) is expressible. FromDistance is the
+// default, so a phone that never sets this follows the distance unit.
+typedef enum UnitsWind {
+  UnitsWind_FromDistance,
+  UnitsWind_KmH,
+  UnitsWind_Mph,
+  UnitsWindCount
+} UnitsWind;
+
+UnitsWind shell_prefs_get_units_wind(void);
+void shell_prefs_set_units_wind(UnitsWind newUnit);
+
 // The backlight preferences are required in all shells, but the settings are
 // hardcoded when running PRF.
 
@@ -183,6 +195,7 @@ void shell_prefs_toggle_language_english(void);
 typedef enum ShellLanguage {
   ShellLanguageInstalledPack = 0,
   ShellLanguageEnglish,
+#ifdef CONFIG_SERVICE_I18N_BUILTIN_LANGUAGES
   ShellLanguageCatalan,
   ShellLanguageGerman,
   ShellLanguageSpanish,
@@ -191,6 +204,7 @@ typedef enum ShellLanguage {
   ShellLanguageDutch,
   ShellLanguagePortuguese,
   ShellLanguagePolish,
+#endif
   ShellLanguageCount,
 } ShellLanguage;
 
@@ -273,3 +287,6 @@ void shell_prefs_set_music_show_volume_controls(bool enable);
 
 bool shell_prefs_get_music_show_progress_bar(void);
 void shell_prefs_set_music_show_progress_bar(bool enable);
+
+bool shell_prefs_get_music_show_album_art(void);
+void shell_prefs_set_music_show_album_art(bool enable);

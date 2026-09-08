@@ -3,13 +3,13 @@
 
 #pragma once
 
+#include "pbl/kernel/msgq.h"
 #include "hrm_manager.h"
 
 #include "applib/event_service_client.h"
 #include <pbl/drivers/rtc.h>
-#include "freertos_types.h"
 #include "kernel/events.h"
-#include "pbl/os/mutex.h"
+#include "pbl/kernel/mutex.h"
 #include "process_management/app_install_types.h"
 #include "pbl/services/new_timer/new_timer.h"
 #include "pbl/util/list.h"
@@ -30,7 +30,7 @@ typedef struct HRMSubscriberState {
   HRMSessionRef session_ref;  // The session ref assigned to this subscriber
   AppInstallId app_id;        // The subscriber's app_id
   PebbleTask task;            // The subscriber's task
-  QueueHandle_t queue;        // Queue to send events to. If NULL, then this is for KernelBG
+  struct pbl_msgq *queue;     // Queue to send events to. If NULL, then this is for KernelBG
 
   HRMSubscriberCallback callback_handler;  // only used for KernelBG subscribers
   void *callback_context;                  // only used for KernelBG subscribers
@@ -58,8 +58,14 @@ typedef struct HRMSubscriberState {
 // After this many consecutive hrm_enable failures, stop trying until reboot
 #define HRM_MAX_ENABLE_FAILURES 3
 
+// If the sensor has been on this long and a subscriber still hasn't received a Good-quality
+// reading, the subscriber is deferred to its next interval instead of holding the sensor on.
+// Comfortably above a normal serve cycle (spin-up plus a few seconds), far below the battery
+// impact threshold.
+#define HRM_MAX_UNSERVED_TIME_SEC 120
+
 struct HRMManagerState {
-  PebbleRecursiveMutex *lock;
+  struct pbl_mutex lock;
   ListNode *subscribers;
 
   CircularBuffer system_task_event_buffer;
@@ -69,7 +75,7 @@ struct HRMManagerState {
 
   AccelManagerState *accel_state;
   AccelRawData accel_manager_buffer[HRM_MANAGER_ACCEL_MANAGER_SAMPLES_PER_UPDATE];
-  PebbleMutex *accel_data_lock;
+  struct pbl_mutex accel_data_lock;
   HRMAccelData accel_data;
 
   // Event Service to keep track of whether the charger is connected
@@ -81,6 +87,9 @@ struct HRMManagerState {
   uint8_t enable_failure_count;    // counts consecutive hrm_enable failures, stops retrying after max
 
   HRMFeature enabled_features;     // feature union the sensor was last enabled with
+
+  RtcTicks sensor_on_since_ticks;  // tick count when the sensor was last turned on; 0 while off
+  bool unserved_timeout_logged;    // limits the unserved-timeout warning to once per on-stretch
 
   bool enabled_run_level;          // True if the current run_level (LowPower, Stationary,
                                    // Normal, etc.) allows the sensor to be turned on

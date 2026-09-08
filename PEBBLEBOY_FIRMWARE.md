@@ -46,12 +46,12 @@ read the release notes before installing.
 `.github/workflows/pebbleboy-obelix-release.yml` checks once per day for the
 latest stable upstream tag. When a new tag appears it:
 
-1. rebases this fork's commits onto that exact tag;
+1. merges that exact tag into this fork;
 2. tags the resulting source as `vX.Y.Z-pebbleboyN`;
 3. builds Obelix DVT and PVT for both firmware slots;
 4. merges each slot pair into one sideloadable PBZ; and
 5. publishes a prerelease with checksums, ELF files, and log dictionaries.
 
 The workflow can also be dispatched manually for a specific upstream tag. If
-an upstream change conflicts with the patches, the rebase fails instead of
+an upstream change conflicts with the patches, the merge fails instead of
 silently publishing an unpatched or partially patched image.

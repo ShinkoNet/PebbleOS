@@ -3,7 +3,6 @@
 
 #include "console/prompt.h"
 #include <pbl/drivers/mcu.h>
-#include <pbl/drivers/pmic.h>
 #include "mfg/mfg_info.h"
 #include "mfg/mfg_serials.h"
 #include "resource/resource.h"
@@ -15,10 +14,10 @@
 #include "pbl/services/comm_session/session_remote_version.h"
 #include "pbl/services/i18n/i18n.h"
 #include "pbl/services/activity/insights_settings.h"
+#include "pbl/services/notifications/notification_image.h"
 #include "shell/system_app_ids.auto.h"
 #include "system/bootbits.h"
 #include <pbl/logging/logging.h>
-#include "system/passert.h"
 #include "system/version.h"
 #include "pbl/util/attributes.h"
 #include "util/net.h"
@@ -140,6 +139,8 @@ static void prv_send_watch_versions(CommSession *session) {
   versions_msg.capabilities.smooth_fw_install_progress_support = 1;
   versions_msg.capabilities.custom_vibe_pattern_support = 1;
   versions_msg.capabilities.blob_db_version_support = 1;
+  versions_msg.capabilities.weather_db_v4_support = 1;
+  versions_msg.capabilities.notification_image_support = NOTIFICATION_IMAGE_SUPPORTED;
   bt_local_id_copy_address(&versions_msg.device_address);
 
   versions_msg.system_resources_version = resource_get_system_version();

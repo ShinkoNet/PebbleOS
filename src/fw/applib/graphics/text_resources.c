@@ -10,6 +10,7 @@
 #include "applib/fonts/fonts_private.h"
 #include "resource/resource_ids.auto.h"
 #include <pbl/logging/logging.h>
+#include <pbl/util/attributes.h>
 #include "system/passert.h"
 #include "system/profiler.h"
 #include "pbl/util/math.h"
@@ -211,7 +212,7 @@ static GlyphData *prv_decompress_glyph_data(GlyphData *g, uint8_t *src) {
   // *src is a pointer to the beginning of <encoded glyph>
   //
   // Once decompressed, Glyph Data will be formatted like this:
-  //  [ <header> | <decoded glyph> | <free space & remenants of encoded glyph data> ]
+  //  [ <header> | <decoded glyph> | <free space & remnants of encoded glyph data> ]
   //
   // The glyph is decoded in-place, so obviously, it's imperative that <decoded glyph> and
   // <encoded glyph> not overlap at any time. This is checked by fontgen.py and confirmed
@@ -349,10 +350,10 @@ static bool prv_load_glyph_bitmap(Codepoint codepoint, const FontResource *font_
   return true;
 }
 
-static const GlyphData *prv_get_glyph_metadata_from_spi(Codepoint codepoint,
-                                                        FontCache *font_cache,
-                                                        const FontResource *font_res,
-                                                        bool need_bitmap) {
+static ALWAYS_INLINE const GlyphData *prv_get_glyph_metadata_from_spi(Codepoint codepoint,
+                                                                      FontCache *font_cache,
+                                                                      const FontResource *font_res,
+                                                                      bool need_bitmap) {
   const uint32_t cache_key = prv_get_cache_key(font_res, codepoint);
   LineCacheData *cached = NULL;
 

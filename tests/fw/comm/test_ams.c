@@ -23,6 +23,7 @@
 #include "stubs_app_manager.h"
 #include "stubs_bt_lock.h"
 #include "stubs_hexdump.h"
+#include "stubs_imaging.h"
 #include "stubs_logging.h"
 #include "stubs_mutex.h"
 #include "stubs_passert.h"
@@ -64,7 +65,7 @@ void launcher_task_add_callback(void (*callback)(void *data), void *data) {
   s_launcher_task_callback_data = data;
 }
 
-// Tests: Disover AMS
+// Tests: Discover AMS
 ///////////////////////////////////////////////////////////
 #define NUM_AMS_INSTANCES 2
 static BLECharacteristic s_characteristics[NUM_AMS_INSTANCES][NumAMSCharacteristic] = {

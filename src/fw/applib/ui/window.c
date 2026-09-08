@@ -25,8 +25,6 @@
 
 #include "status_bar_layer.h"
 
-#include <string.h>
-
 typedef enum {
   WindowHandlerOffsetLoad = offsetof(WindowHandlers, load),
   WindowHandlerOffsetAppear = offsetof(WindowHandlers, appear),
@@ -234,6 +232,13 @@ void window_set_touch_bridge_disabled(Window *window, bool disabled) {
     return;
   }
   window->touch_bridge_disabled = disabled;
+}
+
+void window_set_touch_tap_requires_action_bar(Window *window, bool requires_action_bar) {
+  if (!window || (requires_action_bar == window->touch_tap_requires_action_bar)) {
+    return;
+  }
+  window->touch_tap_requires_action_bar = requires_action_bar;
 }
 
 static ClickManager* prv_get_current_click_manager(void) {
