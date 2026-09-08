@@ -43,8 +43,9 @@ read the release notes before installing.
 
 ## Automated releases
 
-`.github/workflows/pebbleboy-obelix-release.yml` checks once per day for the
-latest stable upstream tag. When a new tag appears it:
+`.github/workflows/pebbleboy-obelix-release.yml` builds each push to `main`
+from the pushed commit. It also checks daily for the latest stable upstream
+tag. When a new upstream tag appears it:
 
 1. merges that exact tag into this fork;
 2. tags the resulting source as `vX.Y.Z-pebbleboyN`;
@@ -55,3 +56,7 @@ latest stable upstream tag. When a new tag appears it:
 The workflow can also be dispatched manually for a specific upstream tag. If
 an upstream change conflicts with the patches, the merge fails instead of
 silently publishing an unpatched or partially patched image.
+
+Push builds use the upstream base recorded in the source. If the base release
+tag already names a different commit, the new tag includes the source commit
+hash. Repeated runs reuse the same tag and skip already published releases.
