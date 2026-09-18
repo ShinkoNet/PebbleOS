@@ -465,8 +465,10 @@ void audec_dac0_dma_irq_handler(AudioDevice* audio_device)
 static void prv_audio_trans_bg(void* data) {
     AudioDeviceState* state  = (AudioDeviceState*) data;
     state->callback_pending = false;
-    uint32_t free_size = circular_buffer_get_write_space_remaining(&state->circ_buffer);
-    state->trans_cb(&free_size);
+    if (state->trans_cb && state->circ_buffer_storage) {
+        uint32_t free_size = circular_buffer_get_write_space_remaining(&state->circ_buffer);
+        state->trans_cb(&free_size);
+    }
 }
 
 static void prv_dma_request_processing(AudioDeviceState* state) {
@@ -500,7 +502,7 @@ static void prv_dma_request_processing(AudioDeviceState* state) {
        free_size >= CFG_AUDIO_PLAYBACK_PIPE_SIZE) {
         bool system_task_switch_context = false;
         state->callback_pending = true;
-        if (!system_task_add_callback_from_isr_droppable(prv_audio_trans_bg, (void*)state,
+        if (!system_task_add_callback_from_isr_droppable_raised(prv_audio_trans_bg, (void*)state,
                 &system_task_switch_context)) {
             state->callback_pending = false;
         }

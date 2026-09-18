@@ -25,6 +25,7 @@ PBL_LOG_MODULE_DEFINE(service_system_task, CONFIG_SERVICE_SYSTEM_TASK_LOG_LEVEL)
 typedef struct {
   SystemTaskEventCallback cb;
   void *data;
+  bool raised_priority;
 } SystemTaskEvent;
 
 #define SYSTEM_TASK_QUEUE_LENGTH 30
@@ -74,6 +75,9 @@ static void system_task_main(void* paramater) {
       event.cb(event.data);
       mcu_fpu_cleanup();
       s_current_cb = NULL;
+      if (event.raised_priority) {
+        system_task_enable_raised_priority(false);
+      }
     }
 
     // Refresh the watchdog immediately, just in case that cb() took awhile to run.
@@ -172,6 +176,31 @@ bool system_task_add_callback_from_isr_droppable(SystemTaskEventCallback cb, voi
   }
 
   return prv_send_to_queue_from_isr(cb, data, should_context_switch);
+}
+
+bool system_task_add_callback_from_isr_droppable_raised(SystemTaskEventCallback cb, void *data,
+                                                       bool *should_context_switch) {
+  *should_context_switch = false;
+  if (!prv_is_accepting_callbacks()) {
+    return false;
+  }
+
+  SystemTaskEvent event = {
+    .cb = cb,
+    .data = data,
+    .raised_priority = true,
+  };
+
+  // The queued event owns the boost until its callback returns, even if the
+  // device stops in the meantime. Rejected work must not retain a reference.
+  pbl_irq_lock();
+  system_task_enable_raised_priority(true);
+  bool success = (pbl_msgq_put(&s_system_task_queue, &event, PBL_NO_WAIT) == 0);
+  if (!success) {
+    system_task_enable_raised_priority(false);
+  }
+  pbl_irq_unlock();
+  return success;
 }
 
 bool system_task_add_callback(SystemTaskEventCallback cb, void *data) {

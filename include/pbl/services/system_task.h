@@ -34,6 +34,11 @@ bool system_task_add_callback_from_isr(SystemTaskEventCallback cb, void *data, b
 bool system_task_add_callback_from_isr_droppable(SystemTaskEventCallback cb, void *data,
                                                  bool *should_context_switch);
 
+//! Droppable ISR callback that raises KernelBG priority while pending or executing.
+//! The queue releases the priority reference after the callback returns.
+bool system_task_add_callback_from_isr_droppable_raised(SystemTaskEventCallback cb, void *data,
+                                                       bool *should_context_switch);
+
 //! @param cb Callback function that will later be called from the system task
 //! @param data Context pointer passed to the callback
 bool system_task_add_callback(SystemTaskEventCallback cb, void *data);
