@@ -28,7 +28,7 @@ typedef struct {
   bool raised_priority;
 } SystemTaskEvent;
 
-#define SYSTEM_TASK_QUEUE_LENGTH 30
+#define SYSTEM_TASK_QUEUE_LENGTH          30
 #define FROM_APP_SYSTEM_TASK_QUEUE_LENGTH 8
 
 static PBL_MSGQ_DEFINE(s_system_task_queue, sizeof(SystemTaskEvent), SYSTEM_TASK_QUEUE_LENGTH);
@@ -47,13 +47,13 @@ static bool prv_is_accepting_callbacks() {
   return s_initialized && !s_should_block_callbacks;
 }
 
-static void system_task_idle_timer_callback(void* data) {
+static void system_task_idle_timer_callback(void *data) {
   if (s_system_task_idle && pbl_poll_group_is_empty(&s_system_task_queue_set)) {
     system_task_watchdog_feed();
   }
 }
 
-static void system_task_main(void* paramater) {
+static void system_task_main(void *paramater) {
   task_watchdog_mask_set(PebbleTask_KernelBackground);
   task_init();
 
@@ -115,9 +115,7 @@ void system_task_timer_init(void) {
   // all the other regular tasks. Note that the system_task_idle_timer_callback only kicks
   // the watchdog if we're currently waiting for work to do on the system_task. If we're in the
   // middle of something we won't kick it.
-  static RegularTimerInfo idle_watchdog_timer = {
-    .cb = system_task_idle_timer_callback
-  };
+  static RegularTimerInfo idle_watchdog_timer = {.cb = system_task_idle_timer_callback};
   regular_timer_add_seconds_callback(&idle_watchdog_timer);
 }
 
@@ -131,9 +129,9 @@ static void handle_system_task_send_failure(SystemTaskEventCallback cb, uintptr_
   RebootReason reason = {
     .code = RebootReasonCode_EventQueueFull,
     .event_queue = {
-      .push_lr = (uint32_t) caller_lr,
-      .current_event = (uint32_t) s_current_cb,
-      .dropped_event = (uint32_t) cb
+      .push_lr = (uint32_t)caller_lr,
+      .current_event = (uint32_t)s_current_cb,
+      .dropped_event = (uint32_t)cb
     }
   };
   reboot_reason_set(&reason);
@@ -141,27 +139,25 @@ static void handle_system_task_send_failure(SystemTaskEventCallback cb, uintptr_
   reset_due_to_software_failure();
 }
 
-static bool prv_send_to_queue_from_isr(SystemTaskEventCallback cb, void *data,
-                                       bool *should_context_switch) {
+static bool prv_send_to_queue_no_wait(SystemTaskEventCallback cb, void *data) {
   SystemTaskEvent event = {
     .cb = cb,
     .data = data,
   };
 
-  bool success = (pbl_msgq_put(&s_system_task_queue, &event, PBL_NO_WAIT) == 0);
-  *should_context_switch = false;
-
-  return success;
+  return pbl_msgq_put(&s_system_task_queue, &event, PBL_NO_WAIT) == 0;
 }
 
-bool system_task_add_callback_from_isr(SystemTaskEventCallback cb, void *data, bool* should_context_switch) {
+bool system_task_add_callback_from_isr(SystemTaskEventCallback cb, void *data,
+                                       bool *should_context_switch) {
   // Capture caller LR at entry; reading from a deeper helper is unreliable.
   uintptr_t caller_lr = (uintptr_t)__builtin_return_address(0);
   if (!prv_is_accepting_callbacks()) {
     return false;
   }
 
-  bool success = prv_send_to_queue_from_isr(cb, data, should_context_switch);
+  *should_context_switch = false;
+  bool success = prv_send_to_queue_no_wait(cb, data);
   if (!success) {
     handle_system_task_send_failure(cb, caller_lr);
   }
@@ -169,13 +165,18 @@ bool system_task_add_callback_from_isr(SystemTaskEventCallback cb, void *data, b
   return success;
 }
 
-bool system_task_add_callback_from_isr_droppable(SystemTaskEventCallback cb, void *data,
-                                                 bool *should_context_switch) {
+bool system_task_add_callback_droppable(SystemTaskEventCallback cb, void *data) {
   if (!prv_is_accepting_callbacks()) {
     return false;
   }
 
-  return prv_send_to_queue_from_isr(cb, data, should_context_switch);
+  return prv_send_to_queue_no_wait(cb, data);
+}
+
+bool system_task_add_callback_from_isr_droppable(SystemTaskEventCallback cb, void *data,
+                                                 bool *should_context_switch) {
+  *should_context_switch = false;
+  return system_task_add_callback_droppable(cb, data);
 }
 
 bool system_task_add_callback_from_isr_droppable_raised(SystemTaskEventCallback cb, void *data,
@@ -216,12 +217,14 @@ bool system_task_add_callback(SystemTaskEventCallback cb, void *data) {
 
   if (pebble_task_get_current() == PebbleTask_App) {
     // If we're the app and we've filled up our system task, the app just gets to wait.
-    // FIXME: In the future when we want to bound the amount of time a syscall can take this will have to change.
+    // FIXME: In the future when we want to bound the amount of time a syscall can take this will
+    // have to change.
     pbl_msgq_put(&s_from_app_system_task_queue, &event, PBL_FOREVER);
     return true;
   } else {
-    // Back ourselves up and wait a reasonable amount of time before failing. If the queue is really backed up
-    // we want to fall through to the handle_system_task_send_failure and not just get killed by the watchdog.
+    // Back ourselves up and wait a reasonable amount of time before failing. If the queue is really
+    // backed up we want to fall through to the handle_system_task_send_failure and not just get
+    // killed by the watchdog.
     bool success = (pbl_msgq_put(&s_system_task_queue, &event, PBL_MSEC(3000)) == 0);
     if (!success) {
       handle_system_task_send_failure(cb, caller_lr);
@@ -240,7 +243,7 @@ uint32_t system_task_get_available_space(void) {
   return pbl_msgq_num_free(is_app ? &s_from_app_system_task_queue : &s_system_task_queue);
 }
 
-void* system_task_get_current_callback(void) {
+void *system_task_get_current_callback(void) {
   return s_current_cb;
 }
 

@@ -18,7 +18,8 @@
 #include "pbl/services/analytics/analytics.h"
 #include "pbl/services/notifications/alerts_preferences.h"
 #include "pbl/services/notifications/do_not_disturb.h"
-#include "pbl/services/system_task.h"
+#include "pbl/util/math.h"
+#include "pbl/util/size.h"
 #include <pbl/logging/logging.h>
 #include "system/passert.h"
 
@@ -26,11 +27,11 @@
 
 PBL_LOG_MODULE_DEFINE(service_speaker, CONFIG_SERVICE_SPEAKER_LOG_LEVEL);
 
-#define SPEAKER_SAMPLE_RATE 16000
+#define SPEAKER_SAMPLE_RATE    16000
 #define SPEAKER_REFILL_SAMPLES 512
 
 // Volume-preview tone: square, to match the perceived loudness
-#define VOLUME_PREVIEW_FREQ_HZ 660
+#define VOLUME_PREVIEW_FREQ_HZ     660
 #define VOLUME_PREVIEW_DURATION_MS 200
 
 // The audio drivers queue up to ~64 ms ahead of the DAC (double-buffered
@@ -48,22 +49,23 @@ typedef struct {
 
   // Note sequence source
   NoteSequenceState note_seq;
-  SpeakerNote *note_buf;  // kernel_malloc'd copy of notes
+  SpeakerNote *note_buf; // kernel_malloc'd copy of notes
 
   // Single tone source (raw frequency, no MIDI quantization)
   uint32_t tone_samples_remaining;
-  uint32_t tone_phase_acc;   // 16.16 fixed-point
-  uint32_t tone_phase_inc;   // per-sample phase increment
+  uint32_t tone_phase_acc; // 16.16 fixed-point
+  uint32_t tone_phase_inc; // per-sample phase increment
   uint8_t tone_waveform;
   uint8_t tone_velocity;
 
   // PCM stream source
   PcmStreamState pcm_stream;
   SpeakerPcmFormat pcm_format;
+  bool stream_realtime;
 
-  // Previous decoded samples for cubic interpolation across chunk boundaries.
-  // [0] = second-to-last sample (s_{n-2}), [1] = last sample (s_{n-1}).
-  int16_t prev_samples[2];
+  // Cubic interpolation history, oldest first; two input samples of delay.
+  int16_t prev_samples[3];
+  uint8_t pcm_tail_samples;
 
   // Temporary buffer for reading raw PCM data before format conversion
   uint8_t raw_buf[1024];
@@ -95,25 +97,26 @@ typedef struct {
 
 static SpeakerServiceState s_state;
 
-// Serializes public APIs against the audio refill callback (system task).
+// Serializes producers and driver refill callbacks.
 static PBL_MUTEX_DEFINE(s_lock);
 
 //! Why playback is currently silent, cached so a muted watch logs once per change
 //! rather than on every sound.
-#define SPEAKER_SILENT (1 << 0)
+#define SPEAKER_SILENT         (1 << 0)
 #define SPEAKER_SILENT_BY_MUTE (1 << 1)
-#define SPEAKER_SILENT_BY_DND (1 << 2)
+#define SPEAKER_SILENT_BY_DND  (1 << 2)
 static uint8_t s_silence_reasons;
 
 //! Analytics: time-weighted average volume, reset on heartbeat.
-static uint64_t s_volume_time_product_sum;     // Sum of (volume_pct × time_ms)
-static RtcTicks s_last_volume_sample_ticks;    // Timestamp of last sample
-static uint8_t s_last_sampled_volume_pct;      // Last volume percentage sampled
-static uint32_t s_total_speaker_on_time_ms;    // Total speaker on-time tracked
+static uint64_t s_volume_time_product_sum;  // Sum of (volume_pct × time_ms)
+static RtcTicks s_last_volume_sample_ticks; // Timestamp of last sample
+static uint8_t s_last_sampled_volume_pct;   // Last volume percentage sampled
+static uint32_t s_total_speaker_on_time_ms; // Total speaker on-time tracked
 
 static void prv_stop_internal(SpeakerFinishReason reason);
 static void prv_audio_trans_cb(uint32_t *free_size);
 static void prv_refill_locked(void);
+static void prv_refill_realtime_locked(void);
 
 static bool prv_is_speaker_muted(void) {
   if (alerts_preferences_get_speaker_muted()) {
@@ -154,7 +157,6 @@ static void prv_update_volume_analytics(uint8_t new_volume_pct) {
 }
 
 void speaker_service_init(void) {
-
   memset(&s_state, 0, sizeof(s_state));
   s_state.state = SpeakerStateIdle;
   s_state.source_type = SpeakerSourceNone;
@@ -190,9 +192,9 @@ static void prv_log_silence(uint8_t vol, uint8_t effective_vol) {
   s_silence_reasons = reasons;
 
   if (reasons != 0) {
-    PBL_LOG_INFO("Playing silently: vol=%"PRIu8" cap=%"PRIu8" mute=%d quiet_time_mute=%d", vol,
-                 alerts_preferences_get_speaker_volume(),
-                 (reasons & SPEAKER_SILENT_BY_MUTE) != 0, (reasons & SPEAKER_SILENT_BY_DND) != 0);
+    PBL_LOG_INFO("Playing silently: vol=%" PRIu8 " cap=%" PRIu8 " mute=%d quiet_time_mute=%d", vol,
+                 alerts_preferences_get_speaker_volume(), (reasons & SPEAKER_SILENT_BY_MUTE) != 0,
+                 (reasons & SPEAKER_SILENT_BY_DND) != 0);
   }
 }
 
@@ -300,23 +302,23 @@ static bool prv_can_preempt(SpeakerPriority new_pri) {
 //! This is the DMA refill callback path:
 //!   DMA ISR -> system_task_add_callback_from_isr -> audio driver trans_cb -> here
 static void prv_audio_trans_cb(uint32_t *free_size) {
-  // Every audio driver dispatches this callback on the system task. Refill
-  // directly instead of queueing a second system-task callback, which can miss
-  // the next 32 ms DMA deadline when KernelBG is busy. If one or more driver
-  // blocks were missed, use the reported free capacity to catch up now.
-  uint32_t refill_count = free_size
-                              ? *free_size / (SPEAKER_REFILL_SAMPLES * sizeof(int16_t))
-                              : 1;
-  if (refill_count == 0) {
+  if (*free_size < sizeof(s_state.refill_buf)) {
     return;
   }
-
   pbl_mutex_lock(&s_lock, PBL_FOREVER);
-  if (s_state.source_type != SpeakerSourceStream) {
-    refill_count = 1;
-  }
-  while (refill_count-- && s_state.state != SpeakerStateIdle) {
-    prv_refill_locked();
+  if (s_state.source_type == SpeakerSourceStream && s_state.stream_realtime) {
+    prv_refill_realtime_locked();
+  } else {
+    // Catch up queued PCM without inserting silence between short packets.
+    uint32_t refill_count =
+        s_state.source_type == SpeakerSourceStream ? *free_size / sizeof(s_state.refill_buf) : 1;
+    while (refill_count-- && s_state.state != SpeakerStateIdle) {
+      prv_refill_locked();
+      if (s_state.source_type == SpeakerSourceStream &&
+          pcm_stream_available(&s_state.pcm_stream) == 0) {
+        break;
+      }
+    }
   }
   pbl_mutex_unlock(&s_lock);
 }
@@ -337,91 +339,81 @@ static int16_t prv_decode_sample(const uint8_t *raw, uint32_t index, bool is_16b
 static inline int16_t prv_cubic_midpoint(int16_t s0, int16_t s1, int16_t s2, int16_t s3) {
   int32_t v = -(int32_t)s0 + 9 * (int32_t)s1 + 9 * (int32_t)s2 - (int32_t)s3;
   // Clamp to int16_t range before dividing
-  v = (v + 8) >> 4;  // divide by 16 with rounding
-  if (v > 32767) v = 32767;
-  if (v < -32768) v = -32768;
+  v = (v + 8) >> 4; // divide by 16 with rounding
+  if (v > 32767)
+    v = 32767;
+  if (v < -32768)
+    v = -32768;
   return (int16_t)v;
 }
 
-//! Read raw PCM data from the stream and convert to 16kHz 16-bit output.
+static uint32_t prv_pcm_bytes_per_sample(void) {
+  return (s_state.pcm_format & 2) ? 2 : 1;
+}
+
+//! Input samples that fit both max_out_samples of output and raw_buf.
+static uint32_t prv_pcm_input_samples(uint32_t max_out_samples) {
+  bool is_16khz = (s_state.pcm_format & 1);
+  uint32_t needed = is_16khz ? max_out_samples : (max_out_samples / 2);
+  return MIN(needed, sizeof(s_state.raw_buf) / prv_pcm_bytes_per_sample());
+}
+
+//! Convert num_samples input samples (zeros when raw is NULL) to 16kHz 16-bit output.
 //! For 8kHz input, uses 4-tap cubic interpolation between consecutive samples
 //! for smooth upsampling without staircase artifacts. Maintains state across
-//! refill calls via prev_samples[] for seamless chunk boundaries.
-//! @param out Output buffer for 16-bit samples
-//! @param max_out_samples Maximum number of output samples to produce
+//! calls via prev_samples[] for seamless chunk boundaries.
 //! @return Number of output samples written
-static uint32_t prv_read_and_convert_pcm(int16_t *out, uint32_t max_out_samples) {
-  SpeakerPcmFormat fmt = s_state.pcm_format;
-  bool is_16khz = (fmt & 1);
-  bool is_16bit = (fmt & 2);
-
-  // Calculate how many input bytes we need for max_out_samples output samples
-  // Output is always 16kHz 16-bit
-  uint32_t input_samples_needed = is_16khz ? max_out_samples : (max_out_samples / 2);
-  uint32_t bytes_per_sample = is_16bit ? 2 : 1;
-  uint32_t input_bytes_needed = input_samples_needed * bytes_per_sample;
-
-  // Clamp to raw_buf size
-  if (input_bytes_needed > sizeof(s_state.raw_buf)) {
-    input_bytes_needed = sizeof(s_state.raw_buf);
-    input_samples_needed = input_bytes_needed / bytes_per_sample;
-  }
-
-  uint32_t bytes_read = pcm_stream_read(&s_state.pcm_stream, s_state.raw_buf,
-                                         input_bytes_needed);
-  if (bytes_read == 0) {
-    return 0;
-  }
-
-  uint32_t samples_read = bytes_read / bytes_per_sample;
+static uint32_t prv_convert_pcm(int16_t *out, const uint8_t *raw, uint32_t num_samples) {
+  bool is_16khz = (s_state.pcm_format & 1);
+  bool is_16bit = (s_state.pcm_format & 2);
   uint32_t out_pos = 0;
 
-  if (is_16khz) {
-    // No upsampling needed — just convert bit depth
-    for (uint32_t i = 0; i < samples_read; i++) {
-      out[out_pos++] = prv_decode_sample(s_state.raw_buf, i, is_16bit);
+  for (uint32_t i = 0; i < num_samples; i++) {
+    int16_t sample = raw ? prv_decode_sample(raw, i, is_16bit) : 0;
+    if (is_16khz) {
+      out[out_pos++] = sample;
+      continue;
     }
-    // Track last two samples for potential future use
-    if (samples_read >= 2) {
-      s_state.prev_samples[0] = out[out_pos - 2];
-      s_state.prev_samples[1] = out[out_pos - 1];
-    } else if (samples_read == 1) {
-      s_state.prev_samples[0] = s_state.prev_samples[1];
-      s_state.prev_samples[1] = out[out_pos - 1];
-    }
-  } else {
-    // 8kHz -> 16kHz: 4-tap cubic interpolation
-    // For each input sample, output the sample itself plus a cubic-interpolated
-    // midpoint using 4 surrounding points: s[i-1], s[i], s[i+1], s[i+2]
-    // prev_samples[] provides the history across chunk boundaries.
-    for (uint32_t i = 0; i < samples_read; i++) {
-      int16_t s_prev = (i >= 1) ? prv_decode_sample(s_state.raw_buf, i - 1, is_16bit)
-                                : s_state.prev_samples[1];
-      int16_t s_curr = prv_decode_sample(s_state.raw_buf, i, is_16bit);
-      int16_t s_next = (i + 1 < samples_read)
-                            ? prv_decode_sample(s_state.raw_buf, i + 1, is_16bit)
-                            : s_curr;
-      int16_t s_next2 = (i + 2 < samples_read)
-                             ? prv_decode_sample(s_state.raw_buf, i + 2, is_16bit)
-                             : s_next;
-
-      out[out_pos++] = s_curr;
-      out[out_pos++] = prv_cubic_midpoint(s_prev, s_curr, s_next, s_next2);
-    }
-
-    // Save last two decoded samples for next chunk's interpolation
-    if (samples_read >= 2) {
-      s_state.prev_samples[0] = prv_decode_sample(s_state.raw_buf, samples_read - 2,
-                                                   is_16bit);
-      s_state.prev_samples[1] = prv_decode_sample(s_state.raw_buf, samples_read - 1,
-                                                   is_16bit);
-    } else if (samples_read == 1) {
-      s_state.prev_samples[0] = s_state.prev_samples[1];
-      s_state.prev_samples[1] = prv_decode_sample(s_state.raw_buf, 0, is_16bit);
-    }
+    // Delay output until all four taps exist, including across short reads.
+    out[out_pos++] = s_state.prev_samples[1];
+    out[out_pos++] = prv_cubic_midpoint(s_state.prev_samples[0], s_state.prev_samples[1],
+                                        s_state.prev_samples[2], sample);
+    s_state.prev_samples[0] = s_state.prev_samples[1];
+    s_state.prev_samples[1] = s_state.prev_samples[2];
+    s_state.prev_samples[2] = sample;
   }
 
   return out_pos;
+}
+
+//! Read raw PCM data from the stream and convert it. Once the stream is closed
+//! and empty, flushes the interpolation delay line.
+//! @return Number of output samples written, 0 on underrun or when fully drained
+static uint32_t prv_read_and_convert_pcm(int16_t *out, uint32_t max_out_samples) {
+  uint32_t bytes_per_sample = prv_pcm_bytes_per_sample();
+  uint32_t input_samples = prv_pcm_input_samples(max_out_samples);
+
+  uint32_t bytes_read =
+      pcm_stream_read(&s_state.pcm_stream, s_state.raw_buf, input_samples * bytes_per_sample);
+  if (bytes_read > 0) {
+    if (!(s_state.pcm_format & 1)) {
+      s_state.pcm_tail_samples = ARRAY_LENGTH(s_state.prev_samples);
+    }
+    return prv_convert_pcm(out, s_state.raw_buf, bytes_read / bytes_per_sample);
+  }
+
+  if (!pcm_stream_is_done(&s_state.pcm_stream)) {
+    return 0;
+  }
+
+  uint32_t tail = MIN(s_state.pcm_tail_samples, input_samples);
+  s_state.pcm_tail_samples -= tail;
+  return prv_convert_pcm(out, NULL, tail);
+}
+
+//! Underrun: run silence through the interpolator so the delayed samples play out.
+static uint32_t prv_pcm_silence(int16_t *out, uint32_t max_out_samples) {
+  return prv_convert_pcm(out, NULL, prv_pcm_input_samples(max_out_samples));
 }
 
 //! Caller must hold s_lock.
@@ -434,19 +426,17 @@ static void prv_refill_locked(void) {
   bool source_exhausted = false;
 
   if (s_state.source_type == SpeakerSourceNoteSeq) {
-    samples_generated = note_seq_fill(&s_state.note_seq, s_state.refill_buf,
-                                      SPEAKER_REFILL_SAMPLES);
+    samples_generated =
+        note_seq_fill(&s_state.note_seq, s_state.refill_buf, SPEAKER_REFILL_SAMPLES);
     source_exhausted = (samples_generated == 0);
   } else if (s_state.source_type == SpeakerSourceStream) {
-    samples_generated = prv_read_and_convert_pcm(s_state.refill_buf,
-                                                  SPEAKER_REFILL_SAMPLES);
+    samples_generated = prv_read_and_convert_pcm(s_state.refill_buf, SPEAKER_REFILL_SAMPLES);
     if (samples_generated == 0 && pcm_stream_is_done(&s_state.pcm_stream)) {
       source_exhausted = true;
     } else if (samples_generated == 0) {
       // No data but not done — write silence to keep DMA fed
       PBL_ANALYTICS_ADD(speaker_stream_underrun_count, 1);
-      memset(s_state.refill_buf, 0, SPEAKER_REFILL_SAMPLES * sizeof(int16_t));
-      samples_generated = SPEAKER_REFILL_SAMPLES;
+      samples_generated = prv_pcm_silence(s_state.refill_buf, SPEAKER_REFILL_SAMPLES);
     }
   } else if (s_state.source_type == SpeakerSourceTone) {
     uint32_t to_gen = s_state.tone_samples_remaining;
@@ -459,10 +449,8 @@ static void prv_refill_locked(void) {
       memset(s_state.refill_buf, 0, to_gen * sizeof(int16_t));
     } else {
       for (uint32_t i = 0; i < to_gen; i++) {
-        s_state.refill_buf[i] = note_synth_sample(s_state.tone_waveform,
-                                                  s_state.tone_phase_acc,
-                                                  s_state.tone_phase_inc,
-                                                  s_state.tone_velocity);
+        s_state.refill_buf[i] = note_synth_sample(s_state.tone_waveform, s_state.tone_phase_acc,
+                                                  s_state.tone_phase_inc, s_state.tone_velocity);
         s_state.tone_phase_acc += s_state.tone_phase_inc;
       }
     }
@@ -472,8 +460,7 @@ static void prv_refill_locked(void) {
     memset(s_state.mix_buf, 0, sizeof(int32_t) * SPEAKER_REFILL_SAMPLES);
     uint32_t max_generated = 0;
     for (uint32_t i = 0; i < s_state.num_tracks; i++) {
-      uint32_t n = track_fill(&s_state.tracks[i], s_state.track_scratch,
-                              SPEAKER_REFILL_SAMPLES);
+      uint32_t n = track_fill(&s_state.tracks[i], s_state.track_scratch, SPEAKER_REFILL_SAMPLES);
       for (uint32_t j = 0; j < n; j++) {
         s_state.mix_buf[j] += s_state.track_scratch[j];
       }
@@ -486,8 +473,10 @@ static void prv_refill_locked(void) {
     }
     for (uint32_t j = 0; j < max_generated; j++) {
       int32_t v = s_state.mix_buf[j];
-      if (v > 32767) v = 32767;
-      else if (v < -32768) v = -32768;
+      if (v > 32767)
+        v = 32767;
+      else if (v < -32768)
+        v = -32768;
       s_state.refill_buf[j] = (int16_t)v;
     }
     samples_generated = max_generated;
@@ -514,8 +503,17 @@ static void prv_refill_locked(void) {
   }
 
   if (samples_generated > 0) {
-    audio_write((AudioDevice *)AUDIO, s_state.refill_buf,
-                samples_generated * sizeof(int16_t));
+    audio_write((AudioDevice *)AUDIO, s_state.refill_buf, samples_generated * sizeof(int16_t));
+  }
+}
+
+static void prv_refill_realtime_locked(void) {
+  const uint32_t bytes_needed =
+      prv_pcm_input_samples(SPEAKER_REFILL_SAMPLES) * prv_pcm_bytes_per_sample();
+  while (s_state.state == SpeakerStatePlaying &&
+         pcm_stream_available(&s_state.pcm_stream) >= bytes_needed &&
+         audio_write((AudioDevice *)AUDIO, NULL, 0) >= sizeof(s_state.refill_buf)) {
+    prv_refill_locked();
   }
 }
 
@@ -564,9 +562,8 @@ bool speaker_service_play_note_seq(const SpeakerNote *notes, uint32_t num_notes,
   return true;
 }
 
-static bool prv_play_tone_internal(uint16_t freq_hz, uint16_t duration_ms,
-                                   uint8_t waveform, uint8_t velocity,
-                                   SpeakerPriority pri, uint8_t vol,
+static bool prv_play_tone_internal(uint16_t freq_hz, uint16_t duration_ms, uint8_t waveform,
+                                   uint8_t velocity, SpeakerPriority pri, uint8_t vol,
                                    bool volume_absolute) {
   pbl_mutex_lock(&s_lock, PBL_FOREVER);
 
@@ -584,12 +581,10 @@ static bool prv_play_tone_internal(uint16_t freq_hz, uint16_t duration_ms,
     prv_stop_internal(SpeakerFinishReasonPreempted);
   }
 
-  s_state.tone_samples_remaining =
-      ((uint32_t)duration_ms * SPEAKER_SAMPLE_RATE) / 1000;
+  s_state.tone_samples_remaining = ((uint32_t)duration_ms * SPEAKER_SAMPLE_RATE) / 1000;
   s_state.tone_phase_acc = 0;
   // phase_inc = freq_hz * 65536 / sample_rate (16.16 fixed-point per sample)
-  s_state.tone_phase_inc = (freq_hz != 0)
-      ? ((uint32_t)freq_hz * 65536u) / SPEAKER_SAMPLE_RATE : 0;
+  s_state.tone_phase_inc = (freq_hz != 0) ? ((uint32_t)freq_hz * 65536u) / SPEAKER_SAMPLE_RATE : 0;
   s_state.tone_waveform = waveform;
   s_state.tone_velocity = velocity;
 
@@ -606,9 +601,8 @@ static bool prv_play_tone_internal(uint16_t freq_hz, uint16_t duration_ms,
   return true;
 }
 
-bool speaker_service_play_tone(uint16_t freq_hz, uint16_t duration_ms,
-                               uint8_t waveform, uint8_t velocity,
-                               SpeakerPriority pri, uint8_t vol) {
+bool speaker_service_play_tone(uint16_t freq_hz, uint16_t duration_ms, uint8_t waveform,
+                               uint8_t velocity, SpeakerPriority pri, uint8_t vol) {
   return prv_play_tone_internal(freq_hz, duration_ms, waveform, velocity, pri, vol,
                                 false /* volume_absolute */);
 }
@@ -618,16 +612,15 @@ bool speaker_service_play_volume_preview(uint8_t vol) {
     vol = 100;
   }
   return prv_play_tone_internal(VOLUME_PREVIEW_FREQ_HZ, VOLUME_PREVIEW_DURATION_MS,
-                                SpeakerWaveformSquare, 0 /* velocity: full */,
-                                SpeakerPriorityApp, vol, true /* volume_absolute */);
+                                SpeakerWaveformSquare, 0 /* velocity: full */, SpeakerPriorityApp,
+                                vol, true /* volume_absolute */);
 }
 
 bool speaker_service_play_tracks(const SpeakerTrack *tracks, uint32_t num_tracks,
                                  SpeakerPriority pri, uint8_t vol) {
   pbl_mutex_lock(&s_lock, PBL_FOREVER);
 
-  if (!s_state.initialized || !tracks || num_tracks == 0 ||
-      num_tracks > SPEAKER_MAX_TRACKS) {
+  if (!s_state.initialized || !tracks || num_tracks == 0 || num_tracks > SPEAKER_MAX_TRACKS) {
     pbl_mutex_unlock(&s_lock);
     return false;
   }
@@ -725,6 +718,11 @@ alloc_fail:
 }
 
 bool speaker_service_stream_open(SpeakerPriority pri, uint8_t vol, SpeakerPcmFormat fmt) {
+  return speaker_service_stream_open_owned(pri, vol, fmt, PebbleTask_Unknown);
+}
+
+static bool prv_stream_open(SpeakerPriority pri, uint8_t vol, SpeakerPcmFormat fmt,
+                            PebbleTask owner, bool realtime) {
   pbl_mutex_lock(&s_lock, PBL_FOREVER);
 
   if (!s_state.initialized) {
@@ -753,8 +751,10 @@ bool speaker_service_stream_open(SpeakerPriority pri, uint8_t vol, SpeakerPcmFor
   s_state.priority = pri;
   s_state.volume = vol;
   s_state.pcm_format = fmt;
-  s_state.prev_samples[0] = 0;
-  s_state.prev_samples[1] = 0;
+  s_state.stream_realtime = realtime;
+  s_state.owner_task = owner;
+  memset(s_state.prev_samples, 0, sizeof(s_state.prev_samples));
+  s_state.pcm_tail_samples = 0;
 
   prv_start_audio(vol);
 
@@ -762,29 +762,55 @@ bool speaker_service_stream_open(SpeakerPriority pri, uint8_t vol, SpeakerPcmFor
   return true;
 }
 
+bool speaker_service_stream_open_owned(SpeakerPriority pri, uint8_t vol, SpeakerPcmFormat fmt,
+                                       PebbleTask owner) {
+  return prv_stream_open(pri, vol, fmt, owner, false);
+}
+
+bool speaker_service_stream_open_realtime_owned(SpeakerPriority pri, uint8_t vol,
+                                                SpeakerPcmFormat fmt, PebbleTask owner) {
+  return prv_stream_open(pri, vol, fmt, owner, true);
+}
+
 uint32_t speaker_service_stream_write(const void *data, uint32_t num_bytes) {
+  return speaker_service_stream_write_owned(PebbleTask_Unknown, data, num_bytes);
+}
+
+uint32_t speaker_service_stream_write_owned(PebbleTask owner, const void *data,
+                                            uint32_t num_bytes) {
   pbl_mutex_lock(&s_lock, PBL_FOREVER);
 
-  if (s_state.state == SpeakerStateIdle ||
-      s_state.source_type != SpeakerSourceStream) {
+  if (s_state.state == SpeakerStateIdle || s_state.source_type != SpeakerSourceStream ||
+      (owner != PebbleTask_Unknown && owner != s_state.owner_task)) {
     pbl_mutex_unlock(&s_lock);
     return 0;
   }
 
+  num_bytes -= num_bytes % prv_pcm_bytes_per_sample();
   uint32_t written = pcm_stream_write(&s_state.pcm_stream, data, num_bytes);
+  if (s_state.stream_realtime) {
+    prv_refill_realtime_locked();
+  }
   pbl_mutex_unlock(&s_lock);
   return written;
 }
 
 void speaker_service_stream_close(void) {
+  speaker_service_stream_close_owned(PebbleTask_Unknown);
+}
+
+void speaker_service_stream_close_owned(PebbleTask owner) {
   pbl_mutex_lock(&s_lock, PBL_FOREVER);
 
-  if (s_state.source_type != SpeakerSourceStream) {
+  if (s_state.source_type != SpeakerSourceStream ||
+      (owner != PebbleTask_Unknown && owner != s_state.owner_task)) {
     pbl_mutex_unlock(&s_lock);
     return;
   }
 
-  if (s_state.pcm_stream.count > 0) {
+  bool realtime = s_state.stream_realtime;
+  s_state.stream_realtime = false;
+  if (realtime || s_state.pcm_stream.count > 0 || s_state.pcm_tail_samples > 0) {
     // Data remaining - enter draining state
     pcm_stream_mark_closing(&s_state.pcm_stream);
     s_state.state = SpeakerStateDraining;
@@ -802,7 +828,15 @@ void speaker_service_stop(void) {
 }
 
 void speaker_service_set_volume(uint8_t vol) {
+  speaker_service_set_volume_owned(PebbleTask_Unknown, vol);
+}
+
+void speaker_service_set_volume_owned(PebbleTask owner, uint8_t vol) {
   pbl_mutex_lock(&s_lock, PBL_FOREVER);
+  if (owner != PebbleTask_Unknown && owner != s_state.owner_task) {
+    pbl_mutex_unlock(&s_lock);
+    return;
+  }
   s_state.volume = vol;
   if (s_state.state != SpeakerStateIdle) {
     const uint8_t effective_vol = prv_effective_volume(vol);
@@ -879,16 +913,16 @@ void pbl_analytics_external_collect_speaker_stats(void) {
 
 #else // !CONFIG_SPEAKER
 
-void speaker_service_init(void) {}
+void speaker_service_init(void) {
+}
 
 bool speaker_service_play_note_seq(const SpeakerNote *notes, uint32_t num_notes,
                                    SpeakerPriority pri, uint8_t vol) {
   return false;
 }
 
-bool speaker_service_play_tone(uint16_t freq_hz, uint16_t duration_ms,
-                               uint8_t waveform, uint8_t velocity,
-                               SpeakerPriority pri, uint8_t vol) {
+bool speaker_service_play_tone(uint16_t freq_hz, uint16_t duration_ms, uint8_t waveform,
+                               uint8_t velocity, SpeakerPriority pri, uint8_t vol) {
   return false;
 }
 
@@ -905,24 +939,52 @@ bool speaker_service_stream_open(SpeakerPriority pri, uint8_t vol, SpeakerPcmFor
   return false;
 }
 
+bool speaker_service_stream_open_owned(SpeakerPriority pri, uint8_t vol, SpeakerPcmFormat fmt,
+                                       PebbleTask owner) {
+  return false;
+}
+
+bool speaker_service_stream_open_realtime_owned(SpeakerPriority pri, uint8_t vol,
+                                                SpeakerPcmFormat fmt, PebbleTask owner) {
+  return false;
+}
+
+uint32_t speaker_service_stream_write_owned(PebbleTask owner, const void *data,
+                                            uint32_t num_bytes) {
+  return 0;
+}
+
 uint32_t speaker_service_stream_write(const void *data, uint32_t num_bytes) {
   return 0;
 }
 
-void speaker_service_stream_close(void) {}
-void speaker_service_stop(void) {}
-void speaker_service_set_volume(uint8_t vol) {}
+void speaker_service_stream_close(void) {
+}
+
+void speaker_service_stream_close_owned(PebbleTask owner) {
+}
+void speaker_service_stop(void) {
+}
+void speaker_service_set_volume(uint8_t vol) {
+}
 
 SpeakerState speaker_service_get_state(void) {
   return SpeakerStateIdle;
 }
 
-void speaker_service_stop_for_task(PebbleTask task) {}
-void speaker_service_set_owner_task(PebbleTask task) {}
-void speaker_service_register_finish(PebbleTask task) {}
-void pbl_analytics_external_collect_speaker_stats(void) {}
+void speaker_service_stop_for_task(PebbleTask task) {
+}
+void speaker_service_set_owner_task(PebbleTask task) {
+}
+void speaker_service_register_finish(PebbleTask task) {
+}
+void pbl_analytics_external_collect_speaker_stats(void) {
+}
 
-bool speaker_service_is_muted(void) { return false; }
-void speaker_service_handle_audio_prefs_changed(void) {}
+bool speaker_service_is_muted(void) {
+  return false;
+}
+void speaker_service_handle_audio_prefs_changed(void) {
+}
 
 #endif // CONFIG_SPEAKER

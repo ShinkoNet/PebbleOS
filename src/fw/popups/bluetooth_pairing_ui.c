@@ -24,11 +24,11 @@
 
 #include "pbl/util/size.h"
 
-#include <bluetooth/pairing_confirm.h>
+#include <pbl/bluetooth/pairing_confirm.h>
 
 #include <string.h>
 
-#define CODE_BUF_SIZE 16
+#define CODE_BUF_SIZE    16
 #define MAX_PAIR_STR_LEN 16
 
 typedef enum {
@@ -60,12 +60,12 @@ typedef struct BTPairingUIData {
   int translated_str_idx;
 #endif
   TextLayer device_name_text_layer;
-  char device_name_layer_buffer[BT_DEVICE_NAME_BUFFER_SIZE];
+  char device_name_layer_buffer[PBL_BT_DEVICE_NAME_BUFFER_SIZE];
   TextLayer code_text_layer;
   char code_text_layer_buffer[CODE_BUF_SIZE];
   TimerID timer;
   BTPairingUIState ui_state;
-  const PairingUserConfirmationCtx *ctx;
+  const struct pbl_bt_pairing_confirm_ctx *ctx;
 
 } BTPairingUIData;
 
@@ -74,7 +74,7 @@ static BTPairingUIData *s_data_ptr = NULL;
 
 static void prv_handle_pairing_complete(bool success);
 
-#ifdef CONFIG_RECOVERY_FW  // PRF -- animate through a few hard-coded text strings for "Pair?"
+#ifdef CONFIG_RECOVERY_FW // PRF -- animate through a few hard-coded text strings for "Pair?"
 
 static void prv_animate_info_text(BTPairingUIData *data);
 
@@ -99,7 +99,6 @@ static void prv_cleanup_prf_animations(BTPairingUIData *data) {
   layer_set_hidden(&data->info_text_layer2.layer, true);
 }
 
-
 typedef struct {
   const char *string;
   const char *font_key;
@@ -119,16 +118,16 @@ static void prv_update_prf_info_text_layers_text(BTPairingUIData *data) {
   const char *font_key_default = FONT_KEY_GOTHIC_24_BOLD;
   const char *font_key_japanese = FONT_KEY_MINCHO_20_PAIR;
 #endif
-  const Translation english_translation = { "Pair?", font_key_default };
+  const Translation english_translation = {"Pair?", font_key_default};
   const Translation translations[] = {
-    { "Koppeln?",    font_key_default }, // German
-    { "Jumeler?",    font_key_default }, // French
-    { "¿Enlazar?",   font_key_default }, // Spanish
-    { "Associare?",  font_key_default }, // Italian
-    { "Emparelhar?", font_key_default }, // Portuguese
-    { "ペアリング",  font_key_japanese }, // Japanese
-    { "配对",        font_key_default }, // Chinese (traditional?)
-    { "配對",        font_key_default }  // Chinese (simplified?)
+    {"Koppeln?", font_key_default},    // German
+    {"Jumeler?", font_key_default},    // French
+    {"¿Enlazar?", font_key_default},   // Spanish
+    {"Associare?", font_key_default},  // Italian
+    {"Emparelhar?", font_key_default}, // Portuguese
+    {"ペアリング", font_key_japanese}, // Japanese
+    {"配对", font_key_default},        // Chinese (traditional?)
+    {"配對", font_key_default}         // Chinese (simplified?)
   };
 
   // The strings should be displayed in the following pattern:
@@ -166,11 +165,9 @@ static void prv_add_prf_layers(GRect pair_text_area, BTPairingUIData *data) {
   data->above_pair_text_area = above_pair_text;
 
   TextLayer *info_text_layer2 = &data->info_text_layer2;
-  text_layer_init_with_parameters(info_text_layer2,
-                                  &above_pair_text,
-                                  data->info_text_layer2_buffer,
-                                  fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD),
-                                  GColorBlack, GColorClear, GTextAlignmentCenter,
+  text_layer_init_with_parameters(info_text_layer2, &above_pair_text, data->info_text_layer2_buffer,
+                                  fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD), GColorBlack,
+                                  GColorClear, GTextAlignmentCenter,
                                   GTextOverflowModeTrailingEllipsis);
   layer_add_child(&data->info_text_mask_layer, &info_text_layer2->layer);
 
@@ -181,9 +178,8 @@ static void prv_add_prf_layers(GRect pair_text_area, BTPairingUIData *data) {
   const int animation_delay_ms = 1700;
 
   // This is the text that is currently not visible and animates into view
-  data->info_text_in_animation =
-        property_animation_create_layer_frame(&data->info_text_layer2.layer,
-                                              &above_pair_text, &pair_text_area);
+  data->info_text_in_animation = property_animation_create_layer_frame(
+      &data->info_text_layer2.layer, &above_pair_text, &pair_text_area);
   PBL_ASSERTN(data->info_text_in_animation);
   Animation *animation = property_animation_get_animation(data->info_text_in_animation);
   animation_set_auto_destroy(animation, false);
@@ -191,9 +187,8 @@ static void prv_add_prf_layers(GRect pair_text_area, BTPairingUIData *data) {
   animation_set_delay(animation, animation_delay_ms);
 
   // This is the text that is currently visible and animates out of view
-  data->info_text_out_animation =
-        property_animation_create_layer_frame(&data->info_text_layer.layer,
-                                              &pair_text_area, &below_pair_text);
+  data->info_text_out_animation = property_animation_create_layer_frame(
+      &data->info_text_layer.layer, &pair_text_area, &below_pair_text);
   PBL_ASSERTN(data->info_text_out_animation);
   animation = property_animation_get_animation(data->info_text_out_animation);
   animation_set_auto_destroy(animation, false);
@@ -214,7 +209,7 @@ static void prv_initialize_info_text(BTPairingUIData *data) {
 static void prv_deinitialize_info_text(BTPairingUIData *data) {
 }
 
-#else  // Normal FW -- use i18n text for "Pair?"
+#else // Normal FW -- use i18n text for "Pair?"
 
 static void prv_cleanup_prf_animations(BTPairingUIData *data) {
 }
@@ -230,7 +225,6 @@ static void prv_deinitialize_info_text(BTPairingUIData *data) {
 }
 
 #endif
-
 
 static uint32_t prv_resource_id_for_state(BTPairingUIState state) {
   switch (state) {
@@ -311,7 +305,7 @@ static void prv_send_response(bool is_confirmed) {
   }
 
   bt_lock();
-  bt_driver_pairing_confirm(s_data_ptr->ctx, is_confirmed);
+  pbl_bt_pairing_confirm(s_data_ptr->ctx, is_confirmed);
   bt_unlock();
 }
 
@@ -341,7 +335,7 @@ static void prv_exit_awaiting_user_confirmation(BTPairingUIData *data) {
 }
 
 static void prv_confirm_click_handler(ClickRecognizerRef recognizer, void *ctx) {
-  Window *window = (Window *) ctx;
+  Window *window = (Window *)ctx;
   BTPairingUIData *data = window_get_user_data(window);
   PBL_ASSERTN(data->ui_state == BTPairingUIStateAwaitingUserConfirmation);
   prv_exit_awaiting_user_confirmation(data);
@@ -351,7 +345,7 @@ static void prv_confirm_click_handler(ClickRecognizerRef recognizer, void *ctx) 
 }
 
 static void prv_decline_click_handler(ClickRecognizerRef recognizer, void *ctx) {
-  Window *window = (Window *) ctx;
+  Window *window = (Window *)ctx;
   BTPairingUIData *data = window_get_user_data(window);
   PBL_ASSERTN(data->ui_state == BTPairingUIStateAwaitingUserConfirmation);
   prv_send_response(false /* is_confirmed */);
@@ -373,8 +367,7 @@ static void prv_window_load(Window *window) {
   const int32_t width = window->layer.bounds.size.w - width_of_action_bar_with_padding;
 #if PBL_DISPLAY_HEIGHT >= 200
   // On large round displays center the text layers on the full window width
-  const int32_t x_offset =
-      PBL_IF_RECT_ELSE(0, (window->layer.bounds.size.w - width) / 2);
+  const int32_t x_offset = PBL_IF_RECT_ELSE(0, (window->layer.bounds.size.w - width) / 2);
   const int32_t info_text_y_offset = 36;
 #else
   const int32_t x_offset = PBL_IF_RECT_ELSE(0, 22);
@@ -400,9 +393,7 @@ static void prv_window_load(Window *window) {
   layer_add_child(&window->layer, &data->info_text_mask_layer);
 
   TextLayer *info_text_layer = &data->info_text_layer;
-  text_layer_init_with_parameters(info_text_layer,
-                                  &pair_text_area,
-                                  data->info_text_layer_buffer,
+  text_layer_init_with_parameters(info_text_layer, &pair_text_area, data->info_text_layer_buffer,
 #if PBL_DISPLAY_HEIGHT >= 200
                                   fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD),
 #else
@@ -438,23 +429,19 @@ static void prv_window_load(Window *window) {
     const int32_t device_name_width = width - x_offset;
 #endif
     TextLayer *device_name_layer = &data->device_name_text_layer;
-    text_layer_init_with_parameters(device_name_layer,
-                                    &GRect(x_offset, 122 + y_offset, device_name_width, 30),
-                                    data->device_name_layer_buffer,
-                                    fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD),
-                                    GColorBlack, GColorClear, GTextAlignmentCenter,
-                                    GTextOverflowModeTrailingEllipsis);
+    text_layer_init_with_parameters(
+        device_name_layer, &GRect(x_offset, 122 + y_offset, device_name_width, 30),
+        data->device_name_layer_buffer, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD), GColorBlack,
+        GColorClear, GTextAlignmentCenter, GTextOverflowModeTrailingEllipsis);
     layer_add_child(&window->layer, &device_name_layer->layer);
   }
   // Confirmation token:
   if (prv_has_confirmation_token(data)) {
     TextLayer *code_text_layer = &data->code_text_layer;
-    text_layer_init_with_parameters(code_text_layer,
-                                    &GRect(x_offset, 148 + y_offset, width, 30),
-                                    data->code_text_layer_buffer,
-                                    fonts_get_system_font(FONT_KEY_GOTHIC_14),
-                                    GColorBlack, GColorClear, GTextAlignmentCenter,
-                                    GTextOverflowModeTrailingEllipsis);
+    text_layer_init_with_parameters(
+        code_text_layer, &GRect(x_offset, 148 + y_offset, width, 30), data->code_text_layer_buffer,
+        fonts_get_system_font(FONT_KEY_GOTHIC_14), GColorBlack, GColorClear, GTextAlignmentCenter,
+        GTextOverflowModeTrailingEllipsis);
     layer_add_child(&window->layer, &code_text_layer->layer);
   }
 
@@ -501,7 +488,7 @@ static void prv_pop_window(void) {
   }
 }
 
-static void prv_pop_window_kernel_main_cb(void* unused) {
+static void prv_pop_window_kernel_main_cb(void *unused) {
   prv_pop_window();
 }
 
@@ -513,10 +500,10 @@ static void prv_push_pairing_window(void) {
   BTPairingUIData *data = s_data_ptr;
   Window *window = &data->window;
   window_init(window, WINDOW_NAME("Bluetooth SSP"));
-  window_set_window_handlers(window, &(WindowHandlers) {
-    .load = prv_window_load,
-    .unload = prv_window_unload,
-  });
+  window_set_window_handlers(window, &(WindowHandlers){
+                                       .load = prv_window_load,
+                                       .unload = prv_window_unload,
+                                     });
   window_set_user_data(window, data);
   window_set_overrides_back_button(window, true);
 
@@ -557,7 +544,7 @@ static void prv_create_new_pairing_data(void) {
   s_data_ptr = data;
 }
 
-static void prv_handle_confirmation_request(const PairingUserConfirmationCtx *ctx,
+static void prv_handle_confirmation_request(const struct pbl_bt_pairing_confirm_ctx *ctx,
                                             PebbleBluetoothPairingConfirmationInfo *info) {
   prv_create_new_pairing_data();
 
@@ -617,8 +604,8 @@ void bluetooth_pairing_ui_handle_event(PebbleBluetoothPairEvent *event) {
       if (s_data_ptr && s_data_ptr->ctx == event->ctx) {
         prv_handle_pairing_complete(event->success);
       } else {
-        PBL_LOG_ERR("Got complete event for unknown process %p vs %p",
-                (void *)event->ctx, s_data_ptr ? (void *)s_data_ptr->ctx : NULL);
+        PBL_LOG_ERR("Got complete event for unknown process %p vs %p", (void *)event->ctx,
+                    s_data_ptr ? (void *)s_data_ptr->ctx : NULL);
       }
       break;
 
@@ -632,7 +619,7 @@ void bluetooth_pairing_ui_handle_event(PebbleBluetoothPairEvent *event) {
 
 static void prv_put_pairing_event(const PebbleBluetoothPairEvent *pair_event) {
   PebbleEvent event = {
-    .type = PEBBLE_BT_PAIRING_EVENT,
+    .type = PBL_BT_PEBBLE_PAIRING_EVENT,
     .bluetooth.pair = *pair_event,
   };
   event_put(&event);
@@ -644,13 +631,13 @@ static void prv_copy_string_and_move_cursor(const char *in_str, char **out_str, 
   }
   size_t str_size_bytes = strlen(in_str) + 1;
   strncpy((char *)*cursor, in_str, str_size_bytes);
-  *out_str = (char *) *cursor;
+  *out_str = (char *)*cursor;
   *cursor += str_size_bytes;
 }
 
-void bt_driver_cb_pairing_confirm_handle_request(const PairingUserConfirmationCtx *ctx,
-                                                 const char *device_name,
-                                                 const char *confirmation_token) {
+void pbl_bt_cb_pairing_confirm_handle_request(const struct pbl_bt_pairing_confirm_ctx *ctx,
+                                              const char *device_name,
+                                              const char *confirmation_token) {
   // events.c clean-up (see event_deinit) can only clean up one associated heap allocation,
   // so put everything in a single buffer:
   size_t device_name_len = device_name ? (strlen(device_name) + 1) : 0;
@@ -668,7 +655,7 @@ void bt_driver_cb_pairing_confirm_handle_request(const PairingUserConfirmationCt
   char *confirmation_token_copy = NULL;
   prv_copy_string_and_move_cursor(confirmation_token, &confirmation_token_copy, &cursor);
 
-  *confirmation_info = (PebbleBluetoothPairingConfirmationInfo) {
+  *confirmation_info = (PebbleBluetoothPairingConfirmationInfo){
     .device_name = device_name_copy,
     .confirmation_token = confirmation_token_copy,
   };
@@ -680,9 +667,8 @@ void bt_driver_cb_pairing_confirm_handle_request(const PairingUserConfirmationCt
   prv_put_pairing_event(&pair_event);
 }
 
-void bt_driver_cb_pairing_confirm_handle_completed(const PairingUserConfirmationCtx *ctx,
-                                                   bool success) {
-
+void pbl_bt_cb_pairing_confirm_handle_completed(const struct pbl_bt_pairing_confirm_ctx *ctx,
+                                                bool success) {
   PebbleBluetoothPairEvent pair_event = {
     .type = PebbleBluetoothPairEventTypePairingComplete,
     .ctx = ctx,

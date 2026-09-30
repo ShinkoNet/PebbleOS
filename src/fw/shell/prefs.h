@@ -26,7 +26,6 @@
 #define TIMELINE_PEEK_WATCHFACE_FIT_SUPPORTED 0
 #endif
 
-
 // The clock 12h/24h setting is required by services/clock.c.
 bool shell_prefs_get_clock_24h_style(void);
 void shell_prefs_set_clock_24h_style(bool is24h);
@@ -195,16 +194,6 @@ void shell_prefs_toggle_language_english(void);
 typedef enum ShellLanguage {
   ShellLanguageInstalledPack = 0,
   ShellLanguageEnglish,
-#ifdef CONFIG_SERVICE_I18N_BUILTIN_LANGUAGES
-  ShellLanguageCatalan,
-  ShellLanguageGerman,
-  ShellLanguageSpanish,
-  ShellLanguageFrench,
-  ShellLanguageItalian,
-  ShellLanguageDutch,
-  ShellLanguagePortuguese,
-  ShellLanguagePolish,
-#endif
   ShellLanguageCount,
 } ShellLanguage;
 
@@ -251,9 +240,9 @@ void shell_prefs_set_settings_dbs_compacted_v1(bool done);
 #ifdef CONFIG_APP_SCALING
 // Legacy app rendering mode - whether to use bezel or scaling for legacy apps
 typedef enum LegacyAppRenderMode {
-  LegacyAppRenderMode_Bezel = 0,    // Center with black bezel (original behavior)
+  LegacyAppRenderMode_Bezel = 0,           // Center with black bezel (original behavior)
   LegacyAppRenderMode_ScalingNearest = 1,  // Scale to fill screen (nearest-neighbor)
-  LegacyAppRenderMode_ScalingBilinear = 2,  // Scale to fill screen (bilinear)
+  LegacyAppRenderMode_ScalingBilinear = 2, // Scale to fill screen (bilinear)
   LegacyAppRenderModeCount
 } LegacyAppRenderMode;
 

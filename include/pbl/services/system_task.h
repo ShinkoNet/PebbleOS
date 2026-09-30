@@ -16,21 +16,26 @@
 void system_task_init(void);
 void system_task_timer_init(void);
 
-//! If your callback running on the system task takes awhile to run, call this regularly to show that
-//! you're still alive.
+//! If your callback running on the system task takes awhile to run, call this regularly to show
+//! that you're still alive.
 void system_task_watchdog_feed(void);
 
 typedef void (*SystemTaskEventCallback)(void *data);
 
 //! @param cb Callback function that will later be called from the system task
 //! @param data Context pointer passed to the callback
-//! @param should_context_switch A boolean that indicates our ISR should context switch at the end instead of
+//! @param should_context_switch A boolean that indicates our ISR should context switch at the end
+//! instead of
 //!                              resuming the previous task.
-bool system_task_add_callback_from_isr(SystemTaskEventCallback cb, void *data, bool* should_context_switch);
+bool system_task_add_callback_from_isr(SystemTaskEventCallback cb, void *data,
+                                       bool *should_context_switch);
 
-//! Same as system_task_add_callback_from_isr(), except a full queue drops the callback and
-//! returns false instead of resetting the system. Only use this when losing the callback is
-//! tolerable, e.g. a periodic refill that a later interrupt retries.
+//! Enqueue without waiting, from task or ISR context, including with IRQs locked.
+//! Returns false if callbacks are disabled or the queue is full; never resets on failure.
+//! Only use when losing the callback is tolerable or the caller can retry later.
+bool system_task_add_callback_droppable(SystemTaskEventCallback cb, void *data);
+
+//! ISR wrapper for system_task_add_callback_droppable().
 bool system_task_add_callback_from_isr_droppable(SystemTaskEventCallback cb, void *data,
                                                  bool *should_context_switch);
 
@@ -50,7 +55,7 @@ void system_task_block_callbacks(bool block);
 uint32_t system_task_get_available_space(void);
 
 //! Debug! Return the callback we're currently executing.
-void* system_task_get_current_callback(void);
+void *system_task_get_current_callback(void);
 
 //! Acquires or releases a reference that keeps KernelBG at a higher priority.
 //! @param is_raised True to acquire a reference, false to release one. Calls must be balanced.
