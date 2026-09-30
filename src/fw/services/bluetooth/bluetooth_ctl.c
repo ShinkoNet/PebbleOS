@@ -3,11 +3,14 @@
 
 #include "pbl/services/bluetooth/bluetooth_ctl.h"
 
-#include <bluetooth/init.h>
+#include <pbl/bluetooth/init.h>
 #include <string.h>
 
 #include "comm/ble/gap_le.h"
 #include "comm/ble/gatt_client_subscriptions.h"
+#ifdef CONFIG_QEMU
+#include "comm/qemu_transport.h"
+#endif
 #include "console/dbgserial.h"
 #include "kernel/events.h"
 #include "kernel/pbl_malloc.h"
@@ -33,7 +36,9 @@ static bool s_comm_state_change_eval_is_scheduled;
 static BtCtlModeOverride s_comm_override = BtCtlModeOverrideNone;
 static PBL_MUTEX_DEFINE(s_comm_state_change_mutex);
 
-bool bt_ctl_is_airplane_mode_on(void) { return s_comm_airplane_mode_on; }
+bool bt_ctl_is_airplane_mode_on(void) {
+  return s_comm_airplane_mode_on;
+}
 
 bool bt_ctl_is_bluetooth_active(void) {
   if (s_comm_enabled) {
@@ -46,14 +51,18 @@ bool bt_ctl_is_bluetooth_active(void) {
   return false;
 }
 
-bool bt_ctl_is_bluetooth_running(void) { return s_comm_is_running; }
+bool bt_ctl_is_bluetooth_running(void) {
+  return s_comm_is_running;
+}
 
 static void prv_put_disconnection_event(void) {
-  PebbleEvent event = (PebbleEvent){.type = PEBBLE_BT_CONNECTION_EVENT,
-                                    .bluetooth.connection = {
-                                        .is_ble = true,
-                                        .state = PebbleBluetoothConnectionEventStateDisconnected,
-                                    }};
+  PebbleEvent event = (PebbleEvent){
+    .type = PBL_BT_PEBBLE_CONNECTION_EVENT,
+    .bluetooth.connection = {
+      .is_ble = true,
+      .state = PebbleBluetoothConnectionEventStateDisconnected,
+    }
+  };
   PBL_LOG_DBG("New BT Conn change event, We are now disconnected");
   event_put(&event);
 }
@@ -63,19 +72,18 @@ static void prv_comm_start(void) {
     return;
   }
   // Heap allocated to reduce stack usage
-  BTDriverConfig *config = kernel_zalloc_check(sizeof(BTDriverConfig));
+  struct pbl_bt_config *config = kernel_zalloc_check(sizeof(struct pbl_bt_config));
   dis_get_info(&config->dis_info);
 #if defined(CONFIG_HRM) && !defined(CONFIG_RECOVERY_FW)
   config->is_hrm_supported_and_enabled = ble_hrm_is_supported_and_enabled();
-  PBL_LOG_INFO("BLE HRM sharing prefs: is_enabled=%u",
-          config->is_hrm_supported_and_enabled);
+  PBL_LOG_INFO("BLE HRM sharing prefs: is_enabled=%u", config->is_hrm_supported_and_enabled);
 #endif
   // Register existing bondings before bringing the connection up: NimBLE
   // restores them before the link is established. The other backends use
   // no-op bonding handlers, so doing it early is harmless for them too.
   bt_persistent_storage_register_existing_ble_bondings();
 
-  s_comm_is_running = bt_driver_start(config);
+  s_comm_is_running = pbl_bt_start(config);
   kernel_free(config);
 
   if (s_comm_is_running) {
@@ -87,6 +95,9 @@ static void prv_comm_start(void) {
 #endif
     ble_bas_init();
     bt_pairability_init();
+#ifdef CONFIG_QEMU
+    qemu_transport_start();
+#endif
   } else {
     PBL_LOG_ERR("BT driver failed to start!");
     // FIXME: PBL-36163 -- handle this better
@@ -102,9 +113,12 @@ static void prv_comm_stop(void) {
   ble_hrm_deinit();
 #endif
   gap_le_deinit();
+#ifdef CONFIG_QEMU
+  qemu_transport_stop();
+#endif
 
   // Should be the last thing to happen that touches the Bluetooth controller directly
-  bt_driver_stop();
+  pbl_bt_stop();
   s_comm_is_running = false;
 
   // This is a legacy event used to update the Settings app.
@@ -114,16 +128,14 @@ static void prv_comm_stop(void) {
 static void prv_send_state_change_event(void) {
   PBL_LOG_DBG("----> Sending a BT state event");
   PebbleEvent event = {
-      .type = PEBBLE_BT_STATE_EVENT,
-      .bluetooth =
-          {
-              .state =
-                  {
-                      .airplane = s_comm_airplane_mode_on,
-                      .enabled = s_comm_enabled,
-                      .override = s_comm_override,
-                  },
-          },
+    .type = PBL_BT_PEBBLE_STATE_EVENT,
+    .bluetooth = {
+      .state = {
+        .airplane = s_comm_airplane_mode_on,
+        .enabled = s_comm_enabled,
+        .override = s_comm_override,
+      },
+    },
   };
   event_put(&event);
   if (s_comm_airplane_mode_on) {
@@ -151,7 +163,7 @@ static void prv_comm_state_change(void *context) {
     }
   } else if (!s_comm_is_running && s_first_run) {
     PBL_LOG_DBG("Shutting down the BT stack on boot");
-    bt_driver_power_down_controller_on_boot();
+    pbl_bt_power_down_controller_on_boot();
   }
 
   s_first_run = false;
@@ -213,7 +225,6 @@ void bt_ctl_set_airplane_mode_async(bool enabled) {
 }
 
 void bt_ctl_init(void) {
-
   s_comm_airplane_mode_on = bt_persistent_storage_get_airplane_mode_enabled();
   s_comm_initialized = true;
 

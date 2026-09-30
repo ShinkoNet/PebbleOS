@@ -18,7 +18,8 @@ implemented under `kernel/`). The main source layers, as described on the
 - `src/fw/drivers` — hardware drivers (public interfaces under
   `include/pbl/drivers`).
 - `subsys/` — OS subsystems shared beyond the firmware tree; currently
-  logging, included via the `pbl/logging/` header path.
+  logging, cron and the Bluetooth backends, included via the
+  `pbl/logging/`, `pbl/cron/` and `pbl/bluetooth/` header paths.
 
 Alongside these sit `src/fw/shell` (launcher/watchface UX flow),
 `src/fw/process_management` (app lifecycle) and `src/fw/comm` (phone
@@ -87,9 +88,12 @@ prose:
   latency and supervision timeouts, and why the firmware deviates from the
   spec-recommended parameter-update pause for iOS.
 
-Beneath it, the transport is a pluggable backend selected per SoC in
-`src/bluetooth-fw/` — NimBLE (`third_party/nimble`) for all current boards,
-plus QEMU and stub backends.
+Beneath it sits NimBLE (`third_party/nimble`), glued in by
+`subsys/bluetooth/`. The HCI transport is chosen per SoC (`BT_HCI`): the
+NimBLE controller on the nRF52 radio, the SiFli LCPU over IPC on SF32LB52,
+and a fake controller on QEMU that acknowledges every command so the host
+runs without a radio. On QEMU the phone link is the emulator's serial
+channel, `src/fw/comm/qemu_transport.c`.
 
 ## Storage
 

@@ -10,7 +10,7 @@
 #include "pbl/services/comm_session/session.h"
 #include "pbl/kernel/mutex.h"
 #include "pbl/services/new_timer/new_timer.h"
-#include "pbl/util/attributes.h"
+#include "pbl/kernel/compiler.h"
 #include "pbl/util/math.h"
 #include "util/net.h"
 
@@ -56,7 +56,6 @@ static void prv_comm_session_event_handler(PebbleEvent *e, void *context) {
 }
 
 void remote_input_init(void) {
-
   static EventServiceInfo s_comm_session_event_info;
   s_comm_session_event_info = (EventServiceInfo){
     .type = PEBBLE_COMM_SESSION_EVENT,
@@ -227,7 +226,8 @@ RemoteInputResult remote_input_button_set(uint8_t buttons) {
 #define REMOTE_INPUT_SWIPE_TRAVEL_DEN 5
 
 _Static_assert((MIN(DISP_COLS, DISP_ROWS) * REMOTE_INPUT_SWIPE_TRAVEL_NUM) /
-                   REMOTE_INPUT_SWIPE_TRAVEL_DEN >= SWIPE_MIN_LENGTH_PX,
+                       REMOTE_INPUT_SWIPE_TRAVEL_DEN >=
+                   SWIPE_MIN_LENGTH_PX,
                "swipe travel is below the swipe recognizer's minimum length");
 
 typedef struct SwipeContext {
@@ -300,14 +300,14 @@ RemoteInputResult remote_input_swipe(RemoteInputSwipeDirection direction, uint16
   const int16_t travel =
       (int16_t)((axis * REMOTE_INPUT_SWIPE_TRAVEL_NUM) / REMOTE_INPUT_SWIPE_TRAVEL_DEN);
   // The finger starts on the far side of centre and travels towards the named direction.
-  const int16_t sign = ((direction == RemoteInputSwipeDirection_Up) ||
-                        (direction == RemoteInputSwipeDirection_Left))
-                           ? -1
-                           : 1;
+  const int16_t sign =
+      ((direction == RemoteInputSwipeDirection_Up) || (direction == RemoteInputSwipeDirection_Left))
+          ? -1
+          : 1;
   const int16_t half = (int16_t)(travel / 2);
   // Round the per-step delta away from zero so the accumulated path never falls short of `travel`.
-  const int16_t step = (int16_t)(sign * ((travel + REMOTE_INPUT_SWIPE_STEPS - 1) /
-                                         REMOTE_INPUT_SWIPE_STEPS));
+  const int16_t step =
+      (int16_t)(sign * ((travel + REMOTE_INPUT_SWIPE_STEPS - 1) / REMOTE_INPUT_SWIPE_STEPS));
 
   SwipeContext *context = kernel_malloc(sizeof(SwipeContext));
   if (!context) {
@@ -335,13 +335,13 @@ RemoteInputResult remote_input_swipe(RemoteInputSwipeDirection direction, uint16
   return result;
 }
 
-#else  // !CONFIG_SERVICE_TOUCH
+#else // !CONFIG_SERVICE_TOUCH
 
 RemoteInputResult remote_input_swipe(RemoteInputSwipeDirection direction, uint16_t duration_ms) {
   return RemoteInputResult_Invalid;
 }
 
-#endif  // CONFIG_SERVICE_TOUCH
+#endif // CONFIG_SERVICE_TOUCH
 
 // ---------------------------------------------------------------------------------------------
 // Pebble protocol endpoint
@@ -352,7 +352,7 @@ typedef enum RemoteInputCommand {
   RemoteInputCommand_ButtonSet = 0x02,
 } RemoteInputCommand;
 
-typedef struct PACKED RemoteInputButtonMsg {
+typedef struct PBL_PACKED RemoteInputButtonMsg {
   uint8_t command;
   uint8_t button_id;
   uint8_t presses;
@@ -360,18 +360,18 @@ typedef struct PACKED RemoteInputButtonMsg {
   uint16_t gap_ms;
 } RemoteInputButtonMsg;
 
-typedef struct PACKED RemoteInputButtonSetMsg {
+typedef struct PBL_PACKED RemoteInputButtonSetMsg {
   uint8_t command;
   uint8_t buttons;
 } RemoteInputButtonSetMsg;
 
-typedef struct PACKED RemoteInputSwipeMsg {
+typedef struct PBL_PACKED RemoteInputSwipeMsg {
   uint8_t command;
   uint8_t direction;
   uint16_t duration_ms;
 } RemoteInputSwipeMsg;
 
-typedef struct PACKED RemoteInputAck {
+typedef struct PBL_PACKED RemoteInputAck {
   uint8_t command;
   uint8_t status;
 } RemoteInputAck;

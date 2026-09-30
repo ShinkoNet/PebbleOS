@@ -19,7 +19,7 @@
 #define AUDIO_VOLUME     0x1C
 
 // Interrupt bits
-#define INT_BUFAVAIL     (1 << 0)
+#define INT_BUFAVAIL (1 << 0)
 
 #define REG32(addr) (*(volatile uint32_t *)(addr))
 
@@ -47,7 +47,7 @@ void audio_start(AudioDevice *dev, AudioTransCB cb) {
   REG32(dev->base_addr + AUDIO_SAMPLERATE) = 16000;
   REG32(dev->base_addr + AUDIO_INTSTAT) = INT_BUFAVAIL; // clear pending
   REG32(dev->base_addr + AUDIO_INTCTRL) = INT_BUFAVAIL; // enable IRQ
-  REG32(dev->base_addr + AUDIO_CTRL) = 1; // enable
+  REG32(dev->base_addr + AUDIO_CTRL) = 1;               // enable
 
   // Enable NVIC IRQ
   NVIC_SetPriority(dev->irqn, 5);
@@ -93,7 +93,7 @@ void qemu_audio_irq_handler(AudioDevice *dev) {
     bool should_context_switch = false;
     dev->state->callback_pending = true;
     if (!system_task_add_callback_from_isr_droppable_raised(prv_audio_system_task_cb, (void *)dev,
-                                                          &should_context_switch)) {
+                                                            &should_context_switch)) {
       dev->state->callback_pending = false;
     }
   }

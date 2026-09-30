@@ -60,7 +60,7 @@ void test_i18n__initialize(void) {
 void test_i18n__cleanup(void) {
 }
 
-extern I18nString *prv_list_find_string(const char *string, void * owner);
+extern I18nString *prv_list_find_string(const char *string, void *owner);
 
 void test_i18n__music(void) {
   const char *first = i18n_get("Music", (void *)0x12345);
@@ -81,6 +81,24 @@ void test_i18n__music(void) {
 void test_i18n__locale(void) {
   cl_assert(strcmp(i18n_get_locale(), "fr_FR") == 0);
   cl_assert_equal_i(i18n_get_version(), 24);
+}
+
+void test_i18n__english_with_installed_pack(void) {
+  shell_prefs_set_language_english(true);
+  i18n_set_resource(RESOURCE_ID_STRINGS);
+
+  cl_assert_equal_s(i18n_get_locale(), "en_US");
+  cl_assert_equal_s(i18n_get("Music", __FILE__), "Music");
+  i18n_free_all(__FILE__);
+}
+
+void test_i18n__english_without_installed_pack(void) {
+  cl_assert_equal_i(pfs_remove("lang"), S_SUCCESS);
+  i18n_set_resource(RESOURCE_ID_STRINGS);
+
+  cl_assert_equal_s(i18n_get_locale(), "en_US");
+  cl_assert_equal_s(i18n_get("Music", __FILE__), "Music");
+  i18n_free_all(__FILE__);
 }
 
 void test_i18n__get_with_buffer(void) {
